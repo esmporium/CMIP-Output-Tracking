@@ -29,6 +29,28 @@ The first run has nothing to compare against,
 so it reports everything it found as "added".
 Every run after that reports the difference.
 
+## Which Python it runs on
+
+`.python-version` pins the interpreter to 3.13, and unlike most projects
+**that file is committed** (`.gitignore` has an explicit exception for it).
+
+This matters, so it is worth knowing why rather than discovering it the hard way.
+Left unpinned, `uv` picks whatever interpreter the machine happens to offer,
+which is not the same answer on two machines.
+On a machine offering CPython 3.14, `uv sync` fails:
+the `pydantic-core` in our lock file has no 3.14 wheel,
+so uv falls back to building it from source,
+and that build needs a PyO3 which does not support 3.14 yet.
+The failure arrives after several minutes of downloading and compiling Rust,
+which makes it look like a much deeper problem than it is.
+
+`uv` will download a managed CPython 3.13 by itself if the machine has not got one;
+this needs no root.
+
+To move to a newer Python later, the interpreter and the lock file have to move
+together: bump `.python-version`, run `uv lock --upgrade-package pydantic-core`,
+and check that `make test` still passes.
+
 ## Set up the mail server
 
 Copy `.env.example` to `.env` and fill it in. There are two sensible shapes.

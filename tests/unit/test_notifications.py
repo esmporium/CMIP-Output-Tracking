@@ -80,7 +80,7 @@ def test_from_env_reads_everything():
         sender="sender@example.com",
         port=2525,
         username="user@example.com",
-        password="a-password",
+        password="a-password",  # noqa: S106 - a fake password in an assertion
         use_starttls=True,
     )
 

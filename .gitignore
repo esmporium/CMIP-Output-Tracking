@@ -108,6 +108,12 @@ ipython_config.py
 
 # pyenv
 .python-version
+# ...except ours, which IS committed. This repo is an application that has to run
+# unattended on a server, not a library, so the interpreter is part of what we pin:
+# left unpinned, uv picks whatever each machine happens to have, and a machine with
+# CPython 3.14 cannot install the pydantic-core in our lock file (no wheel, and the
+# source build needs a PyO3 that does not support 3.14 yet).
+!.python-version
 
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
