@@ -98,7 +98,7 @@ requirement or bump [DB_VERSION_ID][].
 """
 
 RECIPIENTS = (
-    "annazehrung@gmail.com",
+    "anna.zehrung@unimelb.edu.au",
     "zebedee.nicholls@climate-energy-college.org",
 )
 """Who gets told what changed. Add addresses here."""
