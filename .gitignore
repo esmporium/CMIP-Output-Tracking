@@ -155,3 +155,14 @@ dmypy.json
 
 # Mac stuff
 *.DS_Store
+
+# Local secrets for the daily search job
+.env
+
+# Tracking databases: local state, rebuilt by running the job, and the server's
+# copy is the authoritative one. The `-wal`/`-shm` files are SQLite's own.
+dbs/*
+!dbs/.gitkeep
+
+# Logs from the daily cron job
+logs/

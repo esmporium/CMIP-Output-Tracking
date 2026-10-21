@@ -82,3 +82,7 @@ licence-check:  ## Check that licences of the dependencies are suitable
 virtual-environment:  ## update virtual environment, create a new one if it doesn't already exist
 	uv sync --all-extras --group all-dev
 	uv run --group dev pre-commit install
+
+.PHONY: run-search-and-notifications
+run-search-and-notifications:  ## run the whole job: search, update the database, report the changes and email them
+	uv run python scripts/drive-search-and-notifications.py

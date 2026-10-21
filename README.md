@@ -47,6 +47,28 @@ Full documentation can be found at:
 We recommend reading the docs there because the internal documentation links
 don't render correctly on GitHub's viewer.
 
+## The daily search job
+
+This repository runs one job: it searches ESGF for the datasets we are tracking,
+records what it found in a local database,
+and emails a summary of what has changed since the last run.
+
+```sh
+make run-search-and-notifications
+```
+
+All of the configuration -- which search, which database, who gets emailed --
+is hard-coded in `scripts/drive-search-and-notifications.py`,
+which is the only entry point.
+The mail server's credentials come from a `.env` file
+(copy `.env.example` and fill it in); `.env` is never committed.
+
+The first search being tracked is the pattern effect use case:
+monthly `tas` from the CMIP7 historical experiment.
+
+For how to set up the mail settings and run the job daily from cron, see
+["How to run the daily search"](https://cmip-output-tracker.readthedocs.io/en/latest/how-to-guides/run-the-daily-search/).
+
 ## Installation
 
 <!--- --8<-- [start:installation] -->

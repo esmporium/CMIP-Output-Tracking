@@ -8,9 +8,11 @@ authors = [
 license = { text = "placeholder" }
 requires-python = ">=3.10"
 dependencies = [
+    "esmporium",
     # If you use numpy, we suggest pinning to >2.1.0
     # based on the minimum supported python version
     "pandas>=2.2.0",  # pin based on minimum supported python version
+    "python-dotenv>=1.0.0",
 ]
 readme = "README.md"
 classifiers = [
@@ -593,6 +595,9 @@ source-include = [
     "src/cmip_output_tracker",
     "LICENCE",
 ]
+
+[tool.uv.sources]
+esmporium = { git = "https://github.com/esmporium/esmporium.git", rev = "server-tracking-v1" }
 
 [tool.coverage.run]
 source = ["cmip_output_tracker"]
