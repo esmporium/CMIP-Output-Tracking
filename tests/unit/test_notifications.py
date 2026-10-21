@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import email
 import email.policy
+import smtplib
 
 import pytest
 
 from cmip_output_tracker.notifications import (
     DEFAULT_SMTP_PORT,
+    EmailAuthenticationError,
     EmailSettings,
     MissingEmailSettingError,
     send_email,
@@ -219,3 +221,95 @@ def test_send_email_needs_somebody_to_send_to(fake_smtp):
         )
 
     assert not fake_smtp
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "a-password\n",
+        "  a-password  ",
+        "a-password\t",
+    ],
+)
+def test_from_env_strips_whitespace_around_the_password(raw):
+    # A .env file picks these up invisibly, and SMTP AUTH fails obscurely on them.
+    settings = EmailSettings.from_env({**FULL_ENV, "SMTP_PASSWORD": raw})
+
+    assert settings.password == "a-password"  # noqa: S105 - a fake password
+
+
+def test_from_env_keeps_spaces_inside_the_password():
+    # Not ours to silently alter: some passwords really do contain spaces.
+    settings = EmailSettings.from_env({**FULL_ENV, "SMTP_PASSWORD": "abcd efgh"})
+
+    assert settings.password == "abcd efgh"  # noqa: S105 - a fake password
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        smtplib.SMTPServerDisconnected("Connection unexpectedly closed"),
+        smtplib.SMTPAuthenticationError(535, b"Username and Password not accepted"),
+        smtplib.SMTPNotSupportedError("AUTH not supported"),
+    ],
+)
+def test_login_failures_become_a_useful_error(monkeypatch, raised):
+    # Gmail hangs up rather than explaining itself, so a bare
+    # SMTPServerDisconnected reads as a network fault. It is not one.
+    class Refusing(FakeSMTP):
+        def login(self, username, password):
+            raise raised
+
+    monkeypatch.setattr(
+        "cmip_output_tracker.notifications.smtplib.SMTP",
+        Refusing,
+    )
+
+    with pytest.raises(EmailAuthenticationError) as caught:
+        send_email(
+            EmailSettings.from_env(FULL_ENV),
+            recipients=["one@example.com"],
+            subject="a-subject",
+            body="a body",
+        )
+
+    message = str(caught.value)
+    assert "smtp.example.com" in message
+    assert "user@example.com" in message
+    assert "app password" in message
+    # The original is kept, so the real cause is still recoverable.
+    assert caught.value.cause is raised
+    assert caught.value.__cause__ is raised
+
+
+def test_login_failure_calls_out_spaces_in_the_password(monkeypatch):
+    class Refusing(FakeSMTP):
+        def login(self, username, password):
+            raise smtplib.SMTPServerDisconnected(  # noqa: TRY003 - smtplib's own wording
+                "Connection unexpectedly closed"
+            )
+
+    monkeypatch.setattr(
+        "cmip_output_tracker.notifications.smtplib.SMTP",
+        Refusing,
+    )
+
+    with pytest.raises(EmailAuthenticationError) as caught:
+        send_email(
+            EmailSettings.from_env(
+                # Deliberately NOT the example the message itself quotes,
+                # so the "never echoes the password" check below means something.
+                {**FULL_ENV, "SMTP_PASSWORD": "wxyz 1234 qrst 5678"}
+            ),
+            recipients=["one@example.com"],
+            subject="a-subject",
+            body="a body",
+        )
+
+    message = str(caught.value)
+    assert "contains spaces" in message
+    # Named first, because it is the one cause we can actually detect.
+    assert message.index("contains spaces") < message.index("app password")
+    # And never the password itself.
+    assert "wxyz 1234 qrst 5678" not in message
+    assert "wxyz" not in message

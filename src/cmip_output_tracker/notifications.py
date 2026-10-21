@@ -51,6 +51,59 @@ class MissingEmailSettingError(ValueError):
         )
 
 
+class EmailAuthenticationError(RuntimeError):
+    """
+    Raised when the mail server would not accept our credentials
+
+    This exists because what `smtplib` raises is often unhelpfully bare. Gmail
+    closes the connection on an `AUTH` it does not like rather than saying what was
+    wrong with it, so the underlying error is a `SMTPServerDisconnected` carrying
+    no detail at all -- which reads like a network problem when it is really a
+    password problem.
+    """
+
+    def __init__(self, settings: EmailSettings, cause: Exception) -> None:
+        """
+        Initialise the error
+
+        Parameters
+        ----------
+        settings
+            The settings which were refused.
+            Only the shape of the password is reported, never the password.
+
+        cause
+            What `smtplib` raised
+        """
+        self.cause = cause
+        """What `smtplib` raised"""
+
+        password = settings.password or ""
+        reasons = [
+            "the password is not an app password "
+            "(for Gmail, your ordinary account password will not work)",
+            "two-factor authentication is not switched on for the account, "
+            "so app passwords cannot be issued",
+            f"the account does not match SMTP_USERNAME ({settings.username})",
+        ]
+        if " " in password:
+            # Checked first because it is the one we can actually see, and because
+            # Gmail shows app passwords in groups of four with spaces between.
+            reasons.insert(
+                0,
+                "the password contains spaces -- an app password is shown as "
+                "'abcd efgh ijkl mnop' but must be entered as the 16 characters "
+                "with no spaces",
+            )
+
+        listed = "\n".join(f"  - {reason}" for reason in reasons)
+        super().__init__(
+            f"{settings.host} refused the login for {settings.username}.\n"
+            f"The likely causes, in order:\n{listed}\n"
+            f"({type(cause).__name__}: {cause})"
+        )
+
+
 @dataclass(frozen=True)
 class EmailSettings:
     """
@@ -123,7 +176,13 @@ class EmailSettings:
             return value
 
         username = source.get("SMTP_USERNAME", "").strip()
-        password = source.get("SMTP_PASSWORD", "")
+        # Stripped because a value typed into a `.env` file picks up a trailing
+        # space or newline invisibly, and an `AUTH` built around one fails in a way
+        # that looks nothing like "there is a space on the end of your password".
+        # Spaces *inside* it are left alone -- some passwords genuinely contain
+        # them, so that is reported by `EmailAuthenticationError` rather than
+        # silently altered here.
+        password = source.get("SMTP_PASSWORD", "").strip()
 
         return cls(
             host=required("SMTP_HOST"),
@@ -168,6 +227,9 @@ def send_email(
     ------
     ValueError
         `recipients` is empty
+
+    EmailAuthenticationError
+        The mail server would not accept the credentials in `settings`
     """
     if not recipients:
         msg = "No recipients given, so there is nobody to notify"
@@ -200,6 +262,13 @@ def send_email(
             server.starttls()
 
         if settings.username is not None:
-            server.login(settings.username, settings.password or "")
+            try:
+                server.login(settings.username, settings.password or "")
+            except (
+                smtplib.SMTPAuthenticationError,
+                smtplib.SMTPServerDisconnected,
+                smtplib.SMTPNotSupportedError,
+            ) as exc:
+                raise EmailAuthenticationError(settings, exc) from exc
 
         server.send_message(message)
