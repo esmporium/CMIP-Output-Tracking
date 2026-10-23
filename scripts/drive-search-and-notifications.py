@@ -37,7 +37,7 @@ from esmporium.requirements import leaf, requirement
 from sqlalchemy.engine import Engine
 from sqlmodel import create_engine
 
-from cmip_output_tracker.notifications import EmailSettings, send_email
+from local.notifications import EmailSettings, send_email
 
 # ---------------------------------------------------------------------------------
 # Configuration. Everything you might want to change is in this block.

@@ -1,32 +1,13 @@
-# Notebooks
-*.ipynb
-
-# Auto-generated docs and helper files
-docs/api/*
-!docs/api/.gitkeep
-
-# pdm stuff
-.pdm-python
-
-# Databases
-*.db
-
-# Jupyter cache
-.jupyter_cache
-
-# IDE stuff
-.idea/
-
-# Ruff cache
-.ruff_cache
-
-# Licence check
-licence-check.txt
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Jupyter cache
+.jupyter_cache
+
+# Notebooks (track as .py via jupytext instead)
+*.ipynb
 
 # C extensions
 *.so
@@ -93,8 +74,10 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
+# Documentation builds
 docs/_build/
+docs/build/
+site/
 
 # PyBuilder
 target/
@@ -108,11 +91,11 @@ ipython_config.py
 
 # pyenv
 .python-version
-# ...except ours, which IS committed. This repo is an application that has to run
-# unattended on a server, not a library, so the interpreter is part of what we pin:
-# left unpinned, uv picks whatever each machine happens to have, and a machine with
-# CPython 3.14 cannot install the pydantic-core in our lock file (no wheel, and the
-# source build needs a PyO3 that does not support 3.14 yet).
+# ...except ours, which IS committed. This job has to run unattended on a server,
+# so the interpreter is part of what we pin: left unpinned, uv picks whatever each
+# machine happens to have, and a machine with CPython 3.14 cannot install the
+# pydantic-core in our lock file (no wheel, and the source build needs a PyO3 that
+# does not support 3.14 yet).
 !.python-version
 
 # pipenv
@@ -161,9 +144,6 @@ dmypy.json
 
 # Mac stuff
 *.DS_Store
-
-# Local secrets for the daily search job
-.env
 
 # Tracking databases: local state, rebuilt by running the job, and the server's
 # copy is the authoritative one. The `-wal`/`-shm` files are SQLite's own.
