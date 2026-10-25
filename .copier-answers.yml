@@ -1,0 +1,10 @@
+# Changes here will be overwritten by Copier
+_commit: v0.6.1
+_src_path: https://gitlab.com/openscm/copier-basic-python-repository
+email: anna.zehrung@unimelb.edu.au
+local_src: true
+name: Anna Zehrung
+notebooks: true
+package_manager: uv
+project_description_short: Tracking the availability of CMIP data retrieved from ESGF
+project_url: https://github.com/esmporium/CMIP-Output-Tracking
