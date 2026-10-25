@@ -181,6 +181,74 @@ variable=("tas", "pr"),
 
 This still changes the requirement's meaning, so it still needs a new name.
 
+### Change what the email looks like
+
+This is the part of the job we expect to keep changing, and it is why
+`src/local/summary_formatting.py` lives in this repository rather than in
+esmporium.
+
+The division of labour is: **esmporium knows the database, we know the layout.**
+`summarise_search` reads a window of runs and hands back a `SearchSummary`;
+everything in `summary_formatting.py` is a pure function of that object. So the
+email can be rewritten as often as you like without touching the library, without
+a release and without a changelog.
+
+The workflow is:
+
+1. edit `src/local/summary_formatting.py`;
+2. run `make test`. The eight files under
+   `tests/regression/test_summary_rendering/` are checked-in copies of the email,
+   so the failure *is* the before-and-after diff. Read it;
+3. if the new version is the one you want, run `make accept-layout` to rewrite
+   those files, and commit them with the change.
+
+Committing a regenerated fixture without reading its diff defeats the only
+purpose it has. The point of them is not that the text is right -- we do not know
+yet what right looks like -- but that a change to it is impossible to miss.
+
+The handful of tests in `tests/unit/test_summary_formatting.py` are deliberately
+few: they pin the invariants a regression diff *cannot* tell you about (that the
+tables have no trailing whitespace, that the `id` column keeps rows distinct
+however few facets are shown, that a long "what moved" line cannot widen a table).
+Everything about what the output *says* is covered by the regression files.
+
+If you find yourself wanting a **field** esmporium does not compute, as opposed to
+a different arrangement of the fields it does, that is the signal the change
+belongs upstream in esmporium instead. Pulling a layout back later is cheap;
+pulling back a field you have been computing here is not.
+
+### Point esmporium at a different commit
+
+esmporium is pinned to an exact commit in `[tool.uv.sources]`. To move it:
+
+```sh
+make pin-esmporium REV=<commit sha, branch or tag>
+```
+
+That updates `pyproject.toml` and `uv.lock`, re-syncs, and then runs the tests --
+which is the whole point of doing it through the target. To go back, discard the
+two files and re-sync:
+
+```sh
+git checkout pyproject.toml uv.lock && uv sync
+```
+
+**Pin to a commit sha, not a branch or a tag.** A tag can be moved onto different
+work, and a branch moves by definition, so either one makes `uv.lock` the only
+record of what you actually tested against. The target prints the resolved sha
+when it finishes; that is the thing to pin.
+
+`tests/unit/test_esmporium_contract.py` is what makes this safe to do often. It
+names every piece of esmporium's public surface this repository relies on -- the
+functions we import, and every field of a `SearchSummary` the renderer reads --
+and fails by name the moment one of them moves. Without it, the first symptom of a
+rename upstream is a cron job that sends no email, which looks exactly like a
+morning on which nothing changed.
+
+When a name there does legitimately change upstream, fix the renderer and that
+file in the same commit. Loosening the tripwire to make a bump pass is worse than
+not having one, because it still looks like one.
+
 ### Where the data lives
 
 `dbs/001_db.sqlite` holds every dataset the search has ever returned and every run
@@ -194,14 +262,21 @@ Bumping it leaves the old database on disk, so nothing is thrown away.
 
 ## Development
 
-Install and run instructions are the same as the above (this is a simple
-repository, without tests etc. so there are no development-only dependencies).
+Install and run instructions are the same as the above. The test dependencies
+(`pytest`, `pytest-regressions`) live in the `dev` dependency group, which
+`uv sync` installs by default; the job itself does not need them, so a server
+running only the cron job can install without them.
 
 Before pushing, run the checks:
 
 ```sh
 make pre-commit
+make test
 ```
+
+The tests need no database, no network and no ESGF: every one of them builds the
+summary it renders by hand. The whole suite runs in well under a second, so there
+is no reason not to run it.
 
 ### Contributing
 
@@ -219,6 +294,10 @@ scripts/drive-search-and-notifications.py  the job, and all of its configuration
 scripts/run-daily.sh                       cron wrapper around the above
 src/local/                                 the local package, shared helpers
 src/local/notifications.py                 the mechanics of sending an email
+src/local/summary_formatting.py            how the summary is laid out for reading
+tests/conftest.py                          builders for summaries, so tests need no database
+tests/regression/                          checked-in copies of the email itself
+tests/unit/                                the invariants, and the esmporium contract
 dbs/                                       SQLite databases (not committed)
 logs/                                      output from the cron job (not committed)
 ```

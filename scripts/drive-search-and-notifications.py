@@ -38,6 +38,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import create_engine
 
 from local.notifications import EmailSettings, send_email
+from local.summary_formatting import format_summary
 
 # ---------------------------------------------------------------------------------
 # Configuration. Everything you might want to change is in this block.
@@ -208,7 +209,9 @@ def main() -> None:
     # Read the summary back out of the database rather than off `result`, so that
     # what gets emailed is what was actually recorded.
     summary = summarise_search(engine, REQUIREMENT.name)
-    rendered = summary.render(max_rows=MAX_ROWS)
+    # Laid out by our own renderer, not esmporium's: what the email should look like
+    # is ours to change, and `local.summary_formatting` is where we change it.
+    rendered = format_summary(summary, max_rows=MAX_ROWS)
 
     print(rendered)
 

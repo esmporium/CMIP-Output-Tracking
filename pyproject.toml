@@ -26,11 +26,28 @@ source-include = [
     "src/local"
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+    # `file_regression`, i.e. the checked-in copies of the morning email under
+    # `tests/regression`. Accept a deliberate layout change with
+    # `uv run pytest tests/regression --force-regen`.
+    "pytest-regressions>=2.11.0",
+]
+
 [tool.uv]
 package = true
 
 [tool.uv.sources]
-esmporium = { git = "https://github.com/esmporium/esmporium.git", rev = "server-tracking-v1" }
+esmporium = { git = "https://github.com/esmporium/esmporium.git", rev = "a296d9c05b6e8967c7d1dd2f1527a2387cd8e65c" }
+
+[tool.pytest.ini_options]
+addopts = [
+    # So that test modules are imported by their full path rather than inserted
+    # on `sys.path`. Without it, `tests/` and its subdirectories would need
+    # `__init__.py` files, and two test files sharing a basename would clash.
+    "--import-mode=importlib",
+]
 
 [tool.jupytext]
 formats = "ipynb,py:percent"
@@ -57,6 +74,13 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Tests say what they check in their name and their comments, `assert` is the
+# whole point of them, and a magic number in an assertion is the expected value.
+"test*.py" = [
+    "D",
+    "S101",
+    "PLR2004",
+]
 "scripts/*" = [
     "S101",
 ]
