@@ -37,6 +37,15 @@ CURRENT STATE (4 datasets)
 EAST vs WEST
   east and west agree, on all 4 datasets at the same versions
 
+CMIP7  models with at least one satisfying variant
+  model             east  west
+  ACCESS-ESM1-6        1     1
+  CanESM6-0-MR         2     2
+  UKESM1-3-LL          1     1
+  ----------------------------
+  models satisfied     3     3
+  3 models have at least one variant which satisfies the requirement
+
 CMIP6 (6 of 7 answered; 923 datasets at newest usable version)
   endpoint  host                 current  stale  absent  vs last run
   nsc       esg-dn1.nsc.liu.se         -      -       -  FAILED
@@ -51,3 +60,18 @@ CMIP6 (6 of 7 answered; 923 datasets at newest usable version)
   9 datasets served at different versions; ornl has the newest of 9
   FAILED  nsc (esg-dn1.nsc.liu.se): read timeout
   INCOMPLETE  ceda (esgf.ceda.ac.uk): count may be short, and not a usable baseline
+
+CMIP6  models with at least one satisfying variant
+  model             ornl  nci  dkrz  ceda  east  west
+  ACCESS-CM2         129  115   104   104    66    66
+  CanESM5            129  115   104   104    66    66
+  CanESM5-1            -    -     -     -    20    20
+  EC-Earth3          129  114   104   104    66    66
+  GISS-E2-1-G        129  114   104   103    66    66
+  MIROC6             129  114   103   103    66    66
+  NorESM2-LM         129  114   103   103    65    65
+  UKESM1-0-LL        129  114   103   103    65    65
+  ---------------------------------------------------
+  models satisfied     7    7     7     7     8     8
+  8 models have at least one variant which satisfies the requirement
+  nsc is not shown: it did not answer

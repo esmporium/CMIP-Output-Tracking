@@ -29,6 +29,15 @@ CURRENT STATE (4 datasets)
 EAST vs WEST
   east and west agree, on all 4 datasets at the same versions
 
+CMIP7  models with at least one satisfying variant
+  model             east  west
+  ACCESS-ESM1-6        1     1
+  CanESM6-0-MR         2     2
+  UKESM1-3-LL          1     1
+  ----------------------------
+  models satisfied     3     3
+  3 models have at least one variant which satisfies the requirement
+
 CMIP6 (7 of 7 answered; 1030 datasets at newest usable version)
   endpoint  host                 current  stale  absent  vs last run
   nsc       esg-dn1.nsc.liu.se      1030      0       0  no changes
@@ -40,3 +49,17 @@ CMIP6 (7 of 7 answered; 1030 datasets at newest usable version)
   west      search.west.esgf.io      480      0     550  no changes
   nsc alone holds the newest version of all 1030
   11 datasets served at different versions; nsc has the newest of 11
+
+CMIP6  models with at least one satisfying variant
+  model             nsc  ornl  nci  dkrz  ceda  east  west
+  ACCESS-CM2        145   129  115   104   104    66    66
+  CanESM5           145   129  115   104   104    66    66
+  CanESM5-1          20     -    -     -     -    20    20
+  EC-Earth3         144   129  114   104   104    66    66
+  GISS-E2-1-G       144   129  114   104   103    66    66
+  MIROC6            144   129  114   103   103    66    66
+  NorESM2-LM        144   129  114   103   103    65    65
+  UKESM1-0-LL       144   129  114   103   103    65    65
+  --------------------------------------------------------
+  models satisfied    8     7    7     7     7     8     8
+  8 models have at least one variant which satisfies the requirement

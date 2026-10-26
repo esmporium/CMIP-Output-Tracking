@@ -42,6 +42,7 @@ from esmporium.datasets import DATASET_FACET_COLUMNS
 from esmporium.db import DatasetChangeType, describe_moved
 
 from local.coverage import Coverage, coverage_of, newest_usable_records
+from local.models import ModelSupport, model_support
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -909,6 +910,70 @@ def compare_endpoint_summaries(
     return lines
 
 
+def format_model_support(support: ModelSupport, *, title: str) -> str:
+    """
+    Render which models each endpoint can serve, one row per model
+
+    A cell is how many of that model's variants the endpoint can serve, because
+    endpoints which both "have" a model routinely disagree about how much of it they
+    have: five of our CMIP6 endpoints serve `ACCESS-CM2`, and they offer ten, ten,
+    ten, three and two variants of it.
+
+    Every model is listed, never folded away behind a row cap. The list is the point
+    of the table, and a model quietly elided is a model you cannot see.
+
+    Parameters
+    ----------
+    support
+        What [model_support][local.models.model_support] made of one project's results
+
+    title
+        What to call this block, e.g. the project name
+
+    Returns
+    -------
+    :
+        The block, with no trailing newline
+    """
+    heading = f"{title}  models with at least one satisfying variant"
+    if not support.endpoints:
+        return f"{heading}\n  no endpoint answered, so there is nothing to list"
+
+    if not support.models:
+        return f"{heading}\n  no endpoint returned a usable dataset"
+
+    headers = ["model", *support.endpoints]
+    rows = [
+        [
+            model,
+            *(str(support.variants[model].get(tag, "-")) for tag in support.endpoints),
+        ]
+        for model in support.models
+    ]
+    totals = [
+        "models satisfied",
+        *(str(support.satisfied_at(tag)) for tag in support.endpoints),
+    ]
+
+    drawn = render_table(
+        headers, [*rows, totals], right=tuple(support.endpoints)
+    ).splitlines()
+    # A rule above the totals, so the one row which counts rows is not mistaken for
+    # another model. `render_table` draws cells, not rules, so it is spliced in here
+    # rather than taught to the table.
+    rule = "  " + "-" * (max(len(line) for line in drawn) - 2)
+
+    lines = [heading, *drawn[:-1], rule, drawn[-1]]
+    lines.append(
+        f"  {support.n_models} models have at least one variant "
+        "which satisfies the requirement"
+    )
+    for tag in support.silent:
+        lines.append(f"  {tag} is not shown: it did not answer")
+
+    return "\n".join(line.rstrip() for line in lines)
+
+
 _A_PAIR = 2
 """
 How many endpoints a project needs before a direct comparison makes sense
@@ -979,12 +1044,17 @@ def format_report(
         # a project: `east` is two different searches across CMIP6 and CMIP7.
         coverage = coverage_of(of_project)
 
+        models = format_model_support(
+            model_support(of_project), title=project
+        ).splitlines()
+
         if project not in detailed:
             blocks.append(
                 format_endpoint_overview(
                     of_project, coverage, title=project
                 ).splitlines()
             )
+            blocks.append(models)
             continue
 
         for result in of_project:
@@ -1014,6 +1084,8 @@ def format_report(
                     facets=facets,
                 )
             )
+
+        blocks.append(models)
 
     rendered = "\n\n".join("\n".join(block) for block in blocks)
 

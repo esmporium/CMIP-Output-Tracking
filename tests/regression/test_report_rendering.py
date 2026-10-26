@@ -54,6 +54,23 @@ about; `dkrz` and `ceda` hold a lot but are quietly behind on a handful; the two
 indexes hold under half and are never behind on what they do hold.
 """
 
+CMIP6_MODELS = (
+    "ACCESS-CM2",
+    "CanESM5",
+    "EC-Earth3",
+    "GISS-E2-1-G",
+    "MIROC6",
+    "NorESM2-LM",
+    "UKESM1-0-LL",
+)
+"""
+Real CMIP6 model names to spread the fixture's datasets across
+
+Real names rather than `model-1`, for the same reason `REALISTIC_FACETS` uses real
+values: a checked-in copy of the morning email full of placeholders is one nobody can
+review by eye, which is the only thing it is for.
+"""
+
 STAC_ONLY = 20
 """
 Datasets only the STAC indexes and `nsc` carry
@@ -75,6 +92,9 @@ def cmip6_holdings(summary_scenes, tag):
     current, stale = CMIP6_COVERAGE[tag]
     held = [
         summary_scenes.version(
+            CMIP6_MODELS[n % len(CMIP6_MODELS)],
+            "historical",
+            f"r{n // len(CMIP6_MODELS) + 1}i1p1f1",
             dataset_version_id=1000 + n,
             version_string=NEWEST if n < current else SUPERSEDED,
         )
@@ -82,7 +102,13 @@ def cmip6_holdings(summary_scenes, tag):
     ]
     if tag in ("nsc", "east", "west"):
         held += [
-            summary_scenes.version(dataset_version_id=9000 + n, version_string=NEWEST)
+            summary_scenes.version(
+                "CanESM5-1",
+                "historical",
+                f"r{n + 1}i1p1f1",
+                dataset_version_id=9000 + n,
+                version_string=NEWEST,
+            )
             for n in range(STAC_ONLY)
         ]
 
