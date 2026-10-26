@@ -25,6 +25,14 @@ cd "$REPO_ROOT"
 # leaves out. Add the usual homes for it, keeping anything already there.
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 
+# uv hardlinks packages out of its cache into `.venv` when it can, and warns when
+# it cannot. It cannot when the cache and the repository are on different
+# filesystems, which is the normal case on a server where the cache sits under
+# `$HOME` and the work lives on a data volume. Copying instead is perfectly fine --
+# the job syncs a handful of small wheels -- so say that we mean it, rather than
+# logging the same warning every morning.
+export UV_LINK_MODE=copy
+
 if ! command -v uv > /dev/null; then
     echo "uv is not on PATH. Either install it or add its directory to the PATH line in $0" >&2
     exit 1
