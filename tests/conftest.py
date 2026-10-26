@@ -25,6 +25,8 @@ from esmporium.db import (
     VersionRecord,
 )
 
+from local.endpoints import Endpoint, EndpointResult
+
 REALISTIC_FACETS: dict[str, str] = {
     "project": "CMIP7",
     "institution": "CSIRO",
@@ -69,6 +71,12 @@ class SummaryScenes:
 
     summary: typing.Callable[..., SearchSummary]
     """Build a whole summary, with the parts a test doesn't care about filled in"""
+
+    endpoint: typing.Callable[..., Endpoint]
+    """Build one endpoint, as the report identifies it"""
+
+    result: typing.Callable[..., EndpointResult]
+    """Build one endpoint's result, answered or failed"""
 
 
 @pytest.fixture
@@ -127,20 +135,22 @@ def summary_scenes():
             last_run_id=last_run_id,
         )
 
-    def leaf(
+    def leaf(  # noqa: PLR0913 - one argument per thing a scene varies
         role="historical.tas",
         *,
         answered=True,
         n_matches=209,
         n_documents=209,
         failure=None,
+        host="search.east.esgf.io",
+        project="CMIP7",
     ):
         """Build one sub-search's outcome, as a run's health carries it."""
         return SearchRunLeafInfo(
             roles=(role,),
-            project="CMIP7",
+            project=project,
             answered=answered,
-            host="search.east.esgf.io" if answered else None,
+            host=host if answered else None,
             n_matches=n_matches,
             n_documents=n_documents,
             failure=failure,
@@ -168,10 +178,11 @@ def summary_scenes():
         current=(),
         window_runs=(7,),
         baseline_run_id=6,
+        requirement_name="pattern-effect",
     ):
         """Build a whole summary, with the boring parts filled in."""
         return SearchSummary(
-            requirement_name="pattern-effect",
+            requirement_name=requirement_name,
             stored_requirement_id=1,
             run=health if health is not None else run(),
             baseline_run_id=baseline_run_id,
@@ -181,10 +192,75 @@ def summary_scenes():
             current=current,
         )
 
+    def endpoint(tag="east", *, project="CMIP7", host=None):
+        """
+        Build one endpoint
+
+        The host defaults to the real one for `tag` where we have it, so that a
+        rendered table reads like a real one rather than carrying `host-east`.
+        """
+        known = {
+            "east": "search.east.esgf.io",
+            "west": "search.west.esgf.io",
+            "nsc": "esg-dn1.nsc.liu.se",
+            "ornl": "esgf-node.ornl.gov",
+            "nci": "esgf.nci.org.au",
+            "dkrz": "esgf-data.dkrz.de",
+            "ceda": "esgf.ceda.ac.uk",
+        }
+
+        return Endpoint(
+            project=project,
+            host=host if host is not None else known.get(tag, f"{tag}.example.org"),
+            tag=tag,
+        )
+
+    def result(
+        tag="east",
+        *,
+        project="CMIP7",
+        failure=None,
+        complete=True,
+        **summary_kwargs,
+    ):
+        """
+        Build one endpoint's result
+
+        Pass `failure` for an endpoint which did not answer, `complete=False` for one
+        whose run came back short, or any `summary` argument to shape the one which
+        answered in full. `failure` and the rest are mutually exclusive in the type,
+        so passing it ignores them.
+        """
+        where = endpoint(tag, project=project)
+        if failure is not None:
+            return EndpointResult(endpoint=where, summary=None, failure=failure)
+
+        # A result's run health has to report this endpoint's own host, or a fixture
+        # reads as every endpoint having been answered by east -- which is the exact
+        # bug the whole per-endpoint report exists to make visible.
+        summary_kwargs.setdefault(
+            "health",
+            run(
+                complete=complete,
+                leaves=(leaf(host=where.host, project=project),),
+            ),
+        )
+
+        return EndpointResult(
+            endpoint=where,
+            summary=summary(
+                requirement_name=f"pattern-effect-{project.lower()}-{tag}",
+                **summary_kwargs,
+            ),
+            failure=None,
+        )
+
     return SummaryScenes(
         version=version,
         change=change,
         leaf=leaf,
         run=run,
         summary=summary,
+        endpoint=endpoint,
+        result=result,
     )

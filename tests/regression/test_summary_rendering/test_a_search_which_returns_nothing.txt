@@ -1,7 +1,7 @@
 pattern-effect: no changes
 
 run 1, newest started 2026-10-20 06:02 UTC
-compared against nothing (this is the first run)
+nothing changed, so no baseline was recorded
 
 NO CHANGES
 

@@ -21,6 +21,12 @@ the terminal width and with the pandas version, which is exactly what a checked-
 regression file must not do. pandas is for the frames; the standard library is for
 the text.
 
+There are two levels here now. [format_summary][(m).] renders one tracked search,
+which is one endpoint; [format_report][(m).] puts several of them together, because we
+ask the same question of nine endpoints and the interesting part is often how their
+answers differ. Which projects get a full changes table and which get a one-line
+summary is the caller's choice, not this module's: see `detailed`.
+
 The output is plain fixed-width text because that is what
 `local.notifications.send_email` can carry intact: it goes out as a
 `text/plain` part and again inside a monospaced `<pre>`, so columns line up in a
@@ -39,6 +45,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from esmporium.db import ChangeRecord, SearchSummary, VersionRecord
+
+    from local.endpoints import EndpointResult
 
 
 _SECTION_HEADINGS: dict[DatasetChangeType, str] = {
@@ -75,17 +83,41 @@ when a search does vary in something else:
 Everything is in `summary.changes_frame()` regardless, whatever is shown here.
 """
 
+PATTERN_EFFECT_FACETS: tuple[str, ...] = (
+    "model",
+    "variant_label",
+    "grid_label",
+)
+"""
+The facets the pattern-effect report shows
+
+Narrower than [DEFAULT_FACETS][(m).] because the search pins the rest: one project,
+one variable, one experiment, one reporting interval and one `processing_id` are all
+fixed by the query, so a column of each would be the same value every row.
+
+`grid_label` is in and `processing_id` is out, which is the opposite of what
+`DEFAULT_FACETS` assumes about them. Both assumptions are right for their own search:
+`processing_id` splits CMIP7 `tas` three ways (`tavg-`, `tminavg-` and
+`tmaxavg-h2m-hxy-u`), which is exactly why the query pins it rather than why the table
+shows it, and `grid_label` varies across models within a single pinned search.
+
+The `id`, `version` and `retracted` columns are added by `_row_columns` regardless, so
+this is only what names a row, not what tells two rows apart.
+"""
+
 _SHORT_HEADERS: dict[str, str] = {
     "variant_label": "variant",
     "reporting_interval": "interval",
+    "grid_label": "grid",
     "processing_id": "table",
     "id_project_specific": "native id",
 }
 """
 Shorter headings for the columns whose canonical names are too wide to tabulate
 
-`reporting_interval` is an 18-character heading over 3-character values. The frames
-keep the canonical names; this is only what a heading reads as.
+`reporting_interval` is an 18-character heading over 3-character values, and
+`grid_label` a 10-character one over 4-character values like `g150`. The frames keep
+the canonical names; this is only what a heading reads as.
 """
 
 
@@ -247,6 +279,7 @@ def render_table(
     rows: Sequence[Sequence[str]],
     *,
     indent: str = "  ",
+    right: Sequence[str] = (),
 ) -> str:
     """
     Render a fixed-width table
@@ -261,6 +294,11 @@ def render_table(
 
     indent
         What to put in front of every line
+
+    right
+        The headings whose columns to right-justify, for columns of numbers meant to
+        be compared down the column rather than read across the row. Everything is
+        left-justified by default, which is what reads best for names.
 
     Returns
     -------
@@ -292,10 +330,16 @@ def render_table(
         for column in range(len(headers))
     ]
 
+    justify = [
+        str.rjust if headers[column] in right else str.ljust
+        for column in range(len(headers))
+    ]
+
     lines = []
     for cells in [headers, *rows]:
         line = indent + "  ".join(
-            str(cell).ljust(widths[column]) for column, cell in enumerate(cells)
+            justify[column](str(cell), widths[column])
+            for column, cell in enumerate(cells)
         )
         lines.append(line.rstrip())
 
@@ -372,13 +416,19 @@ def _window_lines(summary: SearchSummary) -> list[str]:
         covered = f"runs {runs[0]}-{runs[-1]} ({len(runs)} runs)"
 
     started = summary.run.started_at.strftime("%Y-%m-%d %H:%M UTC")
-    against = (
-        f"run {summary.baseline_run_id}"
-        if summary.baseline_run_id is not None
-        else "nothing (this is the first run)"
-    )
+    if summary.baseline_run_id is not None:
+        measured = f"compared against run {summary.baseline_run_id}"
+    elif _is_first_run(summary):
+        measured = "compared against nothing (this is the first run)"
+    else:
+        # Neither of the above, and we cannot tell which it is. esmporium reads the
+        # baseline off the recorded changes, so a run which changed nothing recorded
+        # no baseline -- whether it was the first run of its search or the hundredth.
+        # This line used to say "this is the first run" here, which is false from the
+        # second quiet morning onwards, so it states the fact instead of guessing.
+        measured = "nothing changed, so no baseline was recorded"
 
-    return [f"{covered}, newest started {started}", f"compared against {against}"]
+    return [f"{covered}, newest started {started}", measured]
 
 
 def _health_lines(summary: SearchSummary) -> list[str]:
@@ -434,27 +484,49 @@ def _health_lines(summary: SearchSummary) -> list[str]:
     return lines
 
 
+def _counted(summary: SearchSummary) -> str:
+    """
+    Say how much the newest run returned, counting datasets rather than documents
+
+    Datasets, because a replica of a dataset is the same dataset: the hosts' own
+    document counts for one of our searches differ by a factor of four, almost
+    entirely through replicas and how far each host's federated search reached. Those
+    numbers are not comparable across endpoints and this one is.
+    """
+    current = summary.current
+    n_datasets = len({version.dataset_id for version in current})
+
+    if len(current) == n_datasets:
+        return f"{len(current)} datasets"
+
+    return f"{len(current)} versions of {n_datasets} datasets"
+
+
 def _current_lines(
-    summary: SearchSummary, *, max_rows: int, facets: Sequence[str]
+    summary: SearchSummary,
+    *,
+    max_rows: int,
+    facets: Sequence[str],
+    show_table: bool = True,
 ) -> list[str]:
-    """Render what the newest run returns now."""
+    """Render what the newest run returns now, or just say how much of it there is."""
     current = summary.current
     if not current:
         return ["CURRENT STATE", "  the newest run returned nothing"]
+
+    if not show_table:
+        # The count without the rows. `max_rows=0` cannot do this: `_capped` keeps no
+        # rows but `render_table` still draws the heading, so the table comes out as a
+        # bare header followed by `... (+N more)`, which reads like a bug.
+        return [f"CURRENT STATE ({_counted(summary)})"]
 
     columns = (*_row_columns(facets), ("nodes", lambda v: str(len(v.data_nodes))))
     headers = [header for header, _ in columns]
     rows = [[read(version) for _, read in columns] for version in current]
     kept, left_out = _capped(rows, max_rows)
 
-    n_datasets = len({version.dataset_id for version in current})
-    counted = (
-        f"{len(current)} datasets"
-        if len(current) == n_datasets
-        else f"{len(current)} versions of {n_datasets} datasets"
-    )
     lines = [
-        f"CURRENT STATE ({counted})",
+        f"CURRENT STATE ({_counted(summary)})",
         render_table(headers, kept),
     ]
     if left_out:
@@ -468,6 +540,7 @@ def format_summary(
     *,
     max_rows: int = 20,
     facets: Sequence[str] | None = None,
+    show_current_table: bool = True,
 ) -> str:
     """
     Render a summary as text
@@ -494,6 +567,14 @@ def format_summary(
         The `id`, `version` and `retracted` columns are always shown, so narrowing
         this never makes two rows indistinguishable; it only makes them less
         self-describing.
+
+    show_current_table
+        Whether to list every dataset the newest run returned, or only count them.
+
+        A watched search returns the same hundreds of rows every morning, so the list
+        is the least informative part of the report and the part which pushes the
+        changes -- the bit there is news in -- off the top of the screen. The count is
+        kept either way, because "47 datasets" going quiet is itself worth seeing.
 
     Returns
     -------
@@ -537,8 +618,348 @@ def format_summary(
         )
 
     blocks.append(_health_lines(summary))
-    blocks.append(_current_lines(summary, max_rows=max_rows, facets=shown))
+    blocks.append(
+        _current_lines(
+            summary,
+            max_rows=max_rows,
+            facets=shown,
+            show_table=show_current_table,
+        )
+    )
 
     rendered = "\n\n".join("\n".join(block) for block in blocks)
 
     return "\n".join(line.rstrip() for line in rendered.splitlines()) + "\n"
+
+
+def _is_first_run(summary: SearchSummary) -> bool:
+    """
+    Work out whether this is the first run of its search
+
+    `baseline_run_id` cannot answer this on its own, which is subtle enough to be
+    worth writing down. esmporium reads it off the recorded changes, so it is `None`
+    in two quite different situations: a first run, which had no baseline to compare
+    against, and *any* quiet run, which recorded no changes and so recorded nothing
+    about what it was compared against either.
+
+    What tells them apart is whether anything changed: a first run reports every
+    dataset it found as an addition. The one case this cannot distinguish is a first
+    run which found nothing at all, which has no changes to report either -- so
+    callers must not render "no baseline" as "a previous run existed". See
+    [_window_lines][(m).], which says what it knows rather than guessing.
+    """
+    return summary.baseline_run_id is None and summary.any_changes
+
+
+def _change_counts(summary: SearchSummary) -> str:
+    """Say what changed in one short phrase, for a column rather than a heading."""
+    if not summary.any_changes:
+        return "no changes"
+
+    if _is_first_run(summary):
+        # Everything is an addition on a first run, which is news about us starting
+        # to watch rather than news about ESGF.
+        return f"first run ({summary.counts[DatasetChangeType.ADDED]})"
+
+    counts = summary.counts
+
+    return (
+        f"+{counts[DatasetChangeType.ADDED]} "
+        f"-{counts[DatasetChangeType.REMOVED]} "
+        f"~{counts[DatasetChangeType.MODIFIED]}"
+    )
+
+
+def format_endpoint_overview(
+    results: Sequence[EndpointResult],
+    *,
+    title: str,
+) -> str:
+    """
+    Render several endpoints' answers as one row each
+
+    For the projects we watch but do not want a changes table of: how much each
+    endpoint returned, and whether that differs from its own previous run. Reading
+    down the `datasets` column is reading how much the endpoints agree with each
+    other, which is a separate question from whether any of them changed.
+
+    Parameters
+    ----------
+    results
+        The endpoints' results, rendered in the order given
+
+    title
+        What to call this block, e.g. the project name
+
+    Returns
+    -------
+    :
+        The block, with no trailing newline
+    """
+    failed = [result for result in results if result.summary is None]
+    counted = f"{len(results)} endpoints"
+    if failed:
+        counted = f"{counted}, {len(failed)} failed"
+
+    headers = ["endpoint", "host", "datasets", "vs last run"]
+    rows = [
+        [
+            result.endpoint.tag,
+            result.endpoint.host,
+            "-" if result.summary is None else str(result.n_datasets),
+            "FAILED" if result.summary is None else _change_counts(result.summary),
+        ]
+        for result in results
+    ]
+
+    lines = [
+        f"{title} ({counted})",
+        render_table(headers, rows, right=("datasets",)),
+    ]
+
+    # Said under the table rather than in a column, for the same reason `what moved`
+    # is: a reason is free text and would set the table's width on its own.
+    for result in results:
+        if result.summary is None:
+            lines.append(f"  FAILED  {result.endpoint.label}: {result.failure}")
+
+    for result in results:
+        if result.summary is not None and not result.summary.run.complete:
+            # Kept short enough to survive a mail client at a sensible width: the
+            # body goes out as fixed-width text and a line which wraps takes the
+            # table's columns with it.
+            lines.append(
+                f"  INCOMPLETE  {result.endpoint.label}: "
+                "count may be short, and not a usable baseline"
+            )
+
+    return "\n".join(line.rstrip() for line in lines)
+
+
+def compare_endpoint_summaries(
+    first: EndpointResult,
+    second: EndpointResult,
+    *,
+    max_rows: int = 10,
+    facets: Sequence[str] | None = None,
+) -> list[str]:
+    """
+    Say whether two endpoints returned the same thing
+
+    Compared on `dataset_version_id`, which is an exact comparison rather than a
+    hopeful one: every endpoint's search writes into the same `dataset` and
+    `datasetversion` tables, so the same dataset at the same version has the same id
+    whichever host reported it. Two endpoints holding different *versions* of one
+    dataset therefore reads as a difference, which is what we want -- one node lagging
+    another by a version is precisely the drift worth seeing.
+
+    Parameters
+    ----------
+    first, second
+        The two endpoints to compare
+
+    max_rows
+        How many differing rows to show per side
+
+    facets
+        Which dataset facets to name the differing rows by. `None` uses
+        [DEFAULT_FACETS][(m).].
+
+    Returns
+    -------
+    :
+        The lines of the comparison
+    """
+    shown = check_facets(facets)
+    one, other = first.endpoint.tag, second.endpoint.tag
+    heading = f"{one.upper()} vs {other.upper()}"
+
+    if first.summary is None or second.summary is None:
+        silent = [
+            result.endpoint.tag for result in (first, second) if result.summary is None
+        ]
+
+        return [
+            heading,
+            f"  cannot compare: {_readable_list(silent)} did not answer",
+        ]
+
+    here = {version.dataset_version_id: version for version in first.summary.current}
+    there = {version.dataset_version_id: version for version in second.summary.current}
+
+    if set(here) == set(there):
+        return [
+            heading,
+            f"  {one} and {other} agree, on all {len(here)} dataset versions",
+        ]
+
+    lines = [
+        heading,
+        f"  {one} has {len(here)}, {other} has {len(there)} "
+        "dataset versions -- THEY DIVERGE",
+    ]
+
+    columns = _row_columns(shown)
+    headers = [header for header, _ in columns]
+    for tag, only in (
+        (one, [here[key] for key in sorted(set(here) - set(there))]),
+        (other, [there[key] for key in sorted(set(there) - set(here))]),
+    ):
+        if not only:
+            continue
+
+        rows = [[read(version) for _, read in columns] for version in only]
+        kept, left_out = _capped(rows, max_rows)
+        lines.append(f"  only in {tag} ({len(only)})")
+        lines.append(render_table(headers, kept, indent="    "))
+        if left_out:
+            lines.append(f"    ... (+{left_out} more)")
+
+    return lines
+
+
+_A_PAIR = 2
+"""
+How many endpoints a project needs before a direct comparison makes sense
+
+Two endpoints have one comparison between them. Three have three, and nobody wants
+to read three pairwise tables when the overview's column of counts says the same
+thing, so only a pair gets compared.
+"""
+
+
+def _projects_in_order(results: Sequence[EndpointResult]) -> tuple[str, ...]:
+    """Get the projects these results cover, in the order they first appear."""
+    return tuple(dict.fromkeys(result.endpoint.project for result in results))
+
+
+def format_report(
+    results: Sequence[EndpointResult],
+    *,
+    detailed: Sequence[str] = (),
+    max_rows: int = 20,
+    facets: Sequence[str] | None = None,
+    show_current_table: bool = False,
+) -> str:
+    """
+    Render every endpoint we asked, as one report
+
+    Parameters
+    ----------
+    results
+        What each endpoint said. Grouped by project in the order the projects first
+        appear, so the order of this sequence is the order of the report.
+
+    detailed
+        The projects to give a full changes table to, one block per endpoint, plus a
+        comparison when the project has exactly two. Every other project gets one
+        [format_endpoint_overview][(m).] table instead.
+
+        This is the knob to reach for when a new search wants more or less than the
+        others: it is a caller's choice, so a search which needs a table and a search
+        which needs a line can live in the same report without either one teaching
+        this module about itself.
+
+    max_rows
+        How many rows of each table to show before summarising the rest
+
+    facets
+        Which dataset facets the tables name rows by. `None` uses
+        [DEFAULT_FACETS][(m).].
+
+    show_current_table
+        Whether the detailed blocks list every dataset or only count them. Defaults to
+        counting, which is the opposite of [format_summary][(m).]'s default: a report
+        of nine endpoints cannot afford nine full listings.
+
+    Returns
+    -------
+    :
+        The report, ending in exactly one newline
+    """
+    blocks: list[list[str]] = []
+
+    for project in _projects_in_order(results):
+        of_project = [
+            result for result in results if result.endpoint.project == project
+        ]
+
+        if project not in detailed:
+            blocks.append(
+                format_endpoint_overview(of_project, title=project).splitlines()
+            )
+            continue
+
+        for result in of_project:
+            # The title and the summary are one block, so the endpoint's name sits
+            # directly above its own headline rather than floating a blank line away
+            # from it.
+            title = f"{project}  {result.endpoint.label}"
+            if result.summary is None:
+                blocks.append([title, f"  FAILED: {result.failure}"])
+                continue
+
+            rendered = format_summary(
+                result.summary,
+                max_rows=max_rows,
+                facets=facets,
+                show_current_table=show_current_table,
+            )
+            blocks.append([title, *rendered.rstrip("\n").splitlines()])
+
+        # See `_A_PAIR`.
+        if len(of_project) == _A_PAIR:
+            blocks.append(
+                compare_endpoint_summaries(
+                    of_project[0],
+                    of_project[1],
+                    max_rows=max_rows,
+                    facets=facets,
+                )
+            )
+
+    rendered = "\n\n".join("\n".join(block) for block in blocks)
+
+    return "\n".join(line.rstrip() for line in rendered.splitlines()) + "\n"
+
+
+def report_subject(results: Sequence[EndpointResult], *, stem: str) -> str:
+    """
+    Render one subject line for a report covering several endpoints
+
+    `SearchSummary.headline` covers one search, and we have nine. What a subject line
+    has to carry is whether this is a morning to open the mail: how many endpoints
+    moved, per project, and whether any of them failed.
+
+    Parameters
+    ----------
+    results
+        What each endpoint said
+
+    stem
+        What to call the search, e.g. `'pattern-effect'`
+
+    Returns
+    -------
+    :
+        The subject line
+    """
+    parts = []
+    for project in _projects_in_order(results):
+        of_project = [
+            result for result in results if result.endpoint.project == project
+        ]
+        changed = [
+            result
+            for result in of_project
+            if result.summary is not None and result.summary.any_changes
+        ]
+        parts.append(f"{project} {len(changed)}/{len(of_project)} changed")
+
+    subject = f"{stem}: {', '.join(parts)}" if parts else f"{stem}: nothing asked"
+
+    n_failed = sum(1 for result in results if result.summary is None)
+    if n_failed:
+        subject = f"[{n_failed} FAILED] {subject}"
+
+    return subject

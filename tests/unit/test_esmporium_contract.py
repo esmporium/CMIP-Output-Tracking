@@ -49,7 +49,12 @@ MODULE_LEVEL_NAMES: dict[str, tuple[str, ...]] = {
     ),
     "esmporium.db.migrate": ("upgrade_to_head",),
     "esmporium.query": ("Query",),
-    "esmporium.requirements": ("leaf", "requirement"),
+    "esmporium.requirements": ("Requirement", "leaf", "requirement"),
+    # What `local.endpoints` needs to ask one endpoint and only that endpoint
+    "esmporium.search.search_api_facade": (
+        "INBUILT_SEARCH_API_FACADE_STORE",
+        "build_list_selector",
+    ),
 }
 """
 Every esmporium name this repository imports, by the module we import it from
@@ -78,6 +83,8 @@ ATTRIBUTES_READ: dict[str, tuple[str, ...]] = {
         "window_runs",
         "baseline_run_id",
         "run",
+        # Read by `_change_counts` for the per-endpoint overview table
+        "counts",
         # The frames are the contract we agreed to keep upstream: as long as these
         # exist, the layout can be rewritten here without touching esmporium.
         "changes_frame",
@@ -177,3 +184,50 @@ def test_the_frames_we_asked_esmporium_to_keep_still_work(summary_scenes):
     for frame in (changes, current):
         assert "dataset_version_id" in frame.columns
         assert "model" in frame.columns
+
+
+def test_the_facade_store_still_pairs_a_host_with_a_project():
+    # `local.endpoints.single_facade_selector` asks the store for exactly one facade.
+    # Without this method it would have to filter the store's classifications itself,
+    # which are not part of esmporium's public surface.
+    # Imported here rather than at the top of the file so that a name which has
+    # moved upstream fails this one test by name. A top-level import would fail the
+    # whole module instead, which is the same news told less usefully.
+    from esmporium.search.search_api_facade import (  # noqa: PLC0415
+        INBUILT_SEARCH_API_FACADE_STORE,
+    )
+
+    facade = INBUILT_SEARCH_API_FACADE_STORE.get_api_facade_for_project_from_host(
+        "CMIP7", "search.east.esgf.io"
+    )
+
+    assert facade.search_api.host == "search.east.esgf.io"
+
+
+def test_a_role_may_still_carry_our_endpoint_tag():
+    # This is the load-bearing assumption of `local.endpoints`, and nothing else
+    # pins it: we put the endpoint in the leaf's role so that the same query asked of
+    # two hosts gives two requirements. If esmporium ever constrains `role` to a
+    # vocabulary, or starts sending it anywhere, this is where we find out.
+    # Local for the same reason as above.
+    from esmporium.query import Query  # noqa: PLC0415
+    from esmporium.requirements import leaf, requirement  # noqa: PLC0415
+
+    query = Query(project=("CMIP7",), variable=("tas",))
+    built = [
+        requirement(
+            name=f"pattern-effect-{tag}",
+            tree=leaf(query, f"tas-{tag}"),
+            group_by=("model", "variant_label"),
+        )
+        for tag in ("east", "west")
+    ]
+
+    east, west = built
+
+    # Different questions, as far as the database is concerned...
+    assert east.requirement_hash() != west.requirement_hash()
+    # ...and the same question, as far as ESGF is concerned. A role is a label, not a
+    # facet; if that stops being true, both endpoints start searching for a variable
+    # named after a data centre.
+    assert east.tree.query == west.tree.query

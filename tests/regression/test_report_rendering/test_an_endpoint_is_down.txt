@@ -1,0 +1,50 @@
+CMIP7  east (search.east.esgf.io)
+pattern-effect-cmip7-east: no changes
+
+run 7, newest started 2026-10-20 06:02 UTC
+compared against run 6
+
+NO CHANGES
+
+RUN HEALTH
+  1/1 sub-searches answered   host: search.east.esgf.io
+  209/209 documents collected (nothing truncated)
+
+CURRENT STATE (4 datasets)
+
+CMIP7  west (search.west.esgf.io)
+pattern-effect-cmip7-west: 1 removed (run incomplete)
+
+run 7, newest started 2026-10-20 06:02 UTC
+compared against run 6
+
+ADDED (0)
+
+REMOVED (1)
+  id   model       variant   grid  version   retracted
+  106  UKCM2-0-LL  r3i1p1f1  g110  20261018  no
+
+MODIFIED (0)
+
+RUN HEALTH
+  1/1 sub-searches answered   host: search.west.esgf.io
+  209/209 documents collected (nothing truncated)
+  this run is incomplete, so it will not be used as a baseline:
+  the next run will compare itself against an earlier one
+
+CURRENT STATE (4 datasets)
+
+EAST vs WEST
+  east and west agree, on all 4 dataset versions
+
+CMIP6 (7 endpoints, 1 failed)
+  endpoint  host                 datasets  vs last run
+  nsc       esg-dn1.nsc.liu.se          -  FAILED
+  ornl      esgf-node.ornl.gov       1180  no changes
+  nci       esgf.nci.org.au          1184  no changes
+  dkrz      esgf-data.dkrz.de        1150  no changes
+  ceda      esgf.ceda.ac.uk           991  no changes
+  east      search.east.esgf.io       461  no changes
+  west      search.west.esgf.io       461  no changes
+  FAILED  nsc (esg-dn1.nsc.liu.se): read timeout
+  INCOMPLETE  ceda (esgf.ceda.ac.uk): count may be short, and not a usable baseline

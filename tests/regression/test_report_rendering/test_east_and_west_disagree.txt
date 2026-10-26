@@ -1,0 +1,52 @@
+CMIP7  east (search.east.esgf.io)
+pattern-effect-cmip7-east: 1 added, 1 modified
+
+run 7, newest started 2026-10-20 06:02 UTC
+compared against run 6
+
+ADDED (1)
+  id   model         variant   grid  version   retracted
+  105  CNRM-ESM2-1e  r1i1p1f2  g105  20261018  no
+
+REMOVED (0)
+
+MODIFIED (1)
+  id   model          variant   grid  version   retracted
+  101  ACCESS-ESM1-6  r1i1p1f1  g115  20261018  no
+         retracted: no -> yes
+
+RUN HEALTH
+  1/1 sub-searches answered   host: search.east.esgf.io
+  209/209 documents collected (nothing truncated)
+
+CURRENT STATE (5 datasets)
+
+CMIP7  west (search.west.esgf.io)
+pattern-effect-cmip7-west: no changes
+
+run 7, newest started 2026-10-20 06:02 UTC
+compared against run 6
+
+NO CHANGES
+
+RUN HEALTH
+  1/1 sub-searches answered   host: search.west.esgf.io
+  209/209 documents collected (nothing truncated)
+
+CURRENT STATE (4 datasets)
+
+EAST vs WEST
+  east has 5, west has 4 dataset versions -- THEY DIVERGE
+  only in east (1)
+    id   model         variant   grid  version   retracted
+    105  CNRM-ESM2-1e  r1i1p1f2  g105  20261018  no
+
+CMIP6 (7 endpoints)
+  endpoint  host                 datasets  vs last run
+  nsc       esg-dn1.nsc.liu.se       1184  no changes
+  ornl      esgf-node.ornl.gov       1180  no changes
+  nci       esgf.nci.org.au          1184  no changes
+  dkrz      esgf-data.dkrz.de        1150  no changes
+  ceda      esgf.ceda.ac.uk           991  no changes
+  east      search.east.esgf.io       461  no changes
+  west      search.west.esgf.io       461  no changes

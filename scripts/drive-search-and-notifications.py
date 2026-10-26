@@ -9,11 +9,17 @@ a secret, read from the `.env` file beside it (see `.env.example`).
 What it does, in order:
 
 1. migrates (or creates) the database at [DB_PATH][]
-2. searches ESGF for [REQUIREMENT][], saving every result into that database and
-   recording the search itself
-3. works out what changed since the last complete run
-4. prints that summary
+2. searches each endpoint in [ENDPOINTS][] separately, saving every result into that
+   database and recording each search as its own tracked search
+3. works out what changed at each endpoint since its own last complete run
+4. prints one report covering all of them
 5. emails it to [RECIPIENTS][]
+
+Each endpoint is searched on its own rather than letting esmporium pick whichever
+answers first. That is the whole point of this version of the job: whether east and
+west agree, and whether five Solr hosts answer one question the same way, is what we
+are trying to find out, and a search which stops at the first good answer can never
+tell us. See [local.endpoints][] for how one question becomes nine tracked searches.
 
 Run it with `make run-search-and-notifications`.
 """
@@ -26,19 +32,24 @@ import traceback
 from pathlib import Path
 
 from dotenv import load_dotenv
-from esmporium.db import (
-    configure_sqlite_for_concurrency,
-    search_and_track,
-    summarise_search,
-)
+from esmporium.db import configure_sqlite_for_concurrency
 from esmporium.db.migrate import upgrade_to_head
 from esmporium.query import Query
-from esmporium.requirements import leaf, requirement
 from sqlalchemy.engine import Engine
 from sqlmodel import create_engine
 
+from local.endpoints import (
+    Endpoint,
+    EndpointResult,
+    endpoint_requirement,
+    search_endpoint,
+)
 from local.notifications import EmailSettings, send_email
-from local.summary_formatting import format_summary
+from local.summary_formatting import (
+    PATTERN_EFFECT_FACETS,
+    format_report,
+    report_subject,
+)
 
 # ---------------------------------------------------------------------------------
 # Configuration. Everything you might want to change is in this block.
@@ -52,13 +63,17 @@ Worked out from this file rather than from the working directory, so that cron c
 run the script from wherever it likes and still find the database.
 """
 
-DB_VERSION_ID = "001"
+DB_VERSION_ID = "002"
 """
 Which database this job reads and writes
 
 Bump this to start a fresh database, e.g. because a search's definition changed
 enough that its history is no longer comparable. The old database stays on disk
 under its own version, so nothing is lost by moving on.
+
+`001` held a single CMIP7 search which did not pin `processing_id` and whose leaf
+role carried no endpoint. Both of those changed, so every requirement in it hashes
+differently now and its four runs are not comparable with anything here.
 
 Note that this is *our* version, not the schema's: esmporium migrates the schema
 itself, on every run, via `upgrade_to_head`.
@@ -67,35 +82,89 @@ itself, on every run, via `upgrade_to_head`.
 DB_PATH = REPO_ROOT / "dbs" / f"{DB_VERSION_ID}_db.sqlite"
 """Database holding every result we have ever seen, and every search we have run"""
 
-REQUIREMENT = requirement(
-    name="pattern-effect-cmip7-tas-mon-historical",
-    tree=leaf(
-        # Each facet takes a tuple of accepted values, so widening the search later
-        # is a matter of adding to these, e.g. `variable=("tas", "pr")`. esmporium
-        # also accepts a bare string and wraps it, but spelling the tuple keeps the
-        # type checkers happy and makes the "several values" case the obvious one.
-        Query(
-            project=("CMIP7",),
-            variable=("tas",),
-            experiment=("historical",),
-            reporting_interval=("mon",),
-        ),
-        "tas",
-    ),
-    group_by=("model", "variant_label"),
+SEARCH_STEM = "pattern-effect-tas-mon-historical"
+"""
+What this search is called, before the project and endpoint are appended
+
+The stem of the key the whole history hangs off: one requirement per endpoint is
+stored as `<stem>-<project>-<tag>`. Changing the query without changing this is
+refused by esmporium, so if you edit a `Query` below, either change the stem or bump
+[DB_VERSION_ID][].
+"""
+
+PROCESSING_IDS = {
+    "CMIP6": ("Amon",),
+    "CMIP7": ("tavg-h2m-hxy-u",),
+}
+"""
+The `processing_id` to pin, per project. These are *not* interchangeable.
+
+esmporium's `processing_id` is one canonical facet over two quite different project
+facets: it is CMIP6's `table_id`, where monthly `tas` lives in `Amon`, and CMIP7's
+`variable_branding_suffix`, where the same variable is published three times over as
+`tavg-`, `tminavg-` and `tmaxavg-h2m-hxy-u`. Asking CMIP7 for `Amon` matches nothing
+at all, silently -- it is a valid facet value, just not one anything is published
+under -- so this mapping is written out per project rather than shared.
+
+Pinning it is what lets the report drop the column: for the pattern effect we want
+the monthly mean, which is `tavg-h2m-hxy-u`, and without the pin CMIP7 returns all
+three brandings as near-identical rows distinguishable only by a column nobody reads.
+"""
+
+QUERIES = {
+    project: Query(
+        project=(project,),
+        variable=("tas",),
+        experiment=("historical",),
+        reporting_interval=("mon",),
+        processing_id=processing_id,
+    )
+    for project, processing_id in PROCESSING_IDS.items()
+}
+"""
+The question, per project
+
+Each facet takes a tuple of accepted values, so widening a search later is a matter
+of adding to these, e.g. `variable=("tas", "pr")`. esmporium also accepts a bare
+string and wraps it, but spelling the tuple keeps the type checkers happy and makes
+the "several values" case the obvious one.
+"""
+
+ENDPOINTS = (
+    # CMIP7 lives on the new STAC indexes. These two are meant to mirror each other,
+    # which is a claim worth checking every morning rather than believing.
+    Endpoint("CMIP7", "search.east.esgf.io", "east"),
+    Endpoint("CMIP7", "search.west.esgf.io", "west"),
+    # CMIP6 on everything that serves it: four esgf1 Solr nodes, the esgf1.5 bridge
+    # at ORNL, and the two STAC indexes. Ordered loosely by how much they return.
+    Endpoint("CMIP6", "esg-dn1.nsc.liu.se", "nsc"),
+    Endpoint("CMIP6", "esgf-node.ornl.gov", "ornl"),
+    Endpoint("CMIP6", "esgf.nci.org.au", "nci"),
+    Endpoint("CMIP6", "esgf-data.dkrz.de", "dkrz"),
+    Endpoint("CMIP6", "esgf.ceda.ac.uk", "ceda"),
+    Endpoint("CMIP6", "search.east.esgf.io", "east"),
+    Endpoint("CMIP6", "search.west.esgf.io", "west"),
 )
 """
-The search we are tracking: the pattern effect use case, for CMIP7
+Every endpoint we ask, and what we call it
 
-Monthly near-surface air temperature from the historical experiment, grouped one
-model and variant at a time. This is the simplest requirement esmporium can
-express -- one dataset, in one role, nothing optional -- which is why it is the one
-we are shaking the job out on.
+One tracked search each, so each has its own history and its own baseline. Adding a
+host here adds a row to the report and a requirement to the database; it does not
+change what any other endpoint reports.
 
-The name is the key the whole history hangs off: it is what the database stores the
-search under, and what the summary is read back out by. Changing the query without
-changing the name is refused, so if you edit the `Query` above, either rename the
-requirement or bump [DB_VERSION_ID][].
+The tag has to be stable, because it is part of the requirement name that endpoint's
+whole history is stored under. Renaming a tag starts that endpoint again from
+scratch.
+"""
+
+DETAILED_PROJECTS = ("CMIP7",)
+"""
+Which projects get a full changes table, one block per endpoint
+
+Everything else gets a single row per endpoint: how much it returned, and whether
+that differs from its own previous run. CMIP7 is the pattern effect case we are
+actually shaking out, so it gets the detail; CMIP6 is here to tell us how much the
+endpoints disagree, which is a number, not a table.
 """
 
 RECIPIENTS = (
@@ -103,6 +172,15 @@ RECIPIENTS = (
     "zebedee.nicholls@climate-energy-college.org",
 )
 """Who gets told what changed. Add addresses here."""
+
+SEND_EMAIL = True
+"""
+Whether to email the report at all
+
+Turn this off while reshaping the layout. The report is printed either way, and the
+whole point of this stage of the work is to run the job repeatedly and read its
+output, which is not a good reason to mail two people nine times in an afternoon.
+"""
 
 EMAIL_WHEN_NOTHING_CHANGED = True
 """
@@ -115,7 +193,7 @@ earned enough trust to be boring.
 """
 
 MAX_ROWS = 50
-"""How many rows of each table to put in the summary before folding the rest away"""
+"""How many rows of each table to put in the report before folding the rest away"""
 
 
 # ---------------------------------------------------------------------------------
@@ -144,6 +222,50 @@ def open_database() -> Engine:
     return engine
 
 
+def search_everything(engine: Engine) -> tuple[EndpointResult, ...]:
+    """
+    Search every endpoint in [ENDPOINTS][], one at a time
+
+    Parameters
+    ----------
+    engine
+        The database to record the runs in
+
+    Returns
+    -------
+    :
+        One result per endpoint, in [ENDPOINTS][] order, including the endpoints
+        which failed
+    """
+    results = []
+    for endpoint in ENDPOINTS:
+        logger.info("Searching %s for %s", endpoint.label, endpoint.project)
+        result = search_endpoint(
+            engine,
+            endpoint,
+            endpoint_requirement(
+                endpoint,
+                QUERIES[endpoint.project],
+                name_stem=SEARCH_STEM,
+                role_stem="tas",
+            ),
+        )
+
+        if result.summary is None:
+            logger.warning("%s failed: %s", endpoint.label, result.failure)
+        else:
+            logger.info(
+                "%s returned %s datasets (%s)",
+                endpoint.label,
+                result.n_datasets,
+                result.summary.headline,
+            )
+
+        results.append(result)
+
+    return tuple(results)
+
+
 def notify(subject: str, body: str) -> None:
     """
     Email one message to everyone on the list
@@ -163,13 +285,14 @@ def notify(subject: str, body: str) -> None:
 
 def main() -> None:
     """
-    Run the search, report what changed, and email it
+    Run every search, report what changed, and email it
 
     Raises
     ------
     Exception
-        Anything the search or the mail server raises. Re-raised after the failure
-        has been emailed, so that cron sees the job fail too.
+        Anything the mail server, the database or the migration raises. One endpoint
+        failing to answer is not one of these: that is reported in the body and the
+        job carries on, because eight endpoints' news is still news.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -186,37 +309,48 @@ def main() -> None:
     logger.info("Using database %s", DB_PATH)
 
     try:
-        result = search_and_track(engine, REQUIREMENT)
+        results = search_everything(engine)
     except Exception:
-        # A search which fell over is news in its own right: without this, the only
-        # symptom of a broken job is mail that never arrives.
-        logger.exception("Search failed")
+        # Getting here means something broke which is not one endpoint being down --
+        # the database, the migration, a requirement we cannot even build. Without
+        # this, the only symptom of a broken job is mail that never arrives.
+        logger.exception("The job failed")
         try:
             notify(
-                f"[FAILED] {REQUIREMENT.name}",
-                "The tracked search did not finish. The traceback was:\n\n"
+                f"[FAILED] {SEARCH_STEM}",
+                "The job did not finish. The traceback was:\n\n"
                 f"{traceback.format_exc()}",
             )
         except Exception:
-            # Swallowed so that the search's own failure is what propagates: being
+            # Swallowed so that the original failure is what propagates: being
             # unable to report a problem must not replace the problem.
             logger.exception("Could not email the failure either")
 
         raise
 
-    logger.info("Run %s finished (complete=%s)", result.search_run_id, result.complete)
-
-    # Read the summary back out of the database rather than off `result`, so that
-    # what gets emailed is what was actually recorded.
-    summary = summarise_search(engine, REQUIREMENT.name)
-    # Laid out by our own renderer, not esmporium's: what the email should look like
-    # is ours to change, and `local.summary_formatting` is where we change it.
-    rendered = format_summary(summary, max_rows=MAX_ROWS)
+    rendered = format_report(
+        results,
+        detailed=DETAILED_PROJECTS,
+        max_rows=MAX_ROWS,
+        facets=PATTERN_EFFECT_FACETS,
+    )
+    subject = report_subject(results, stem=SEARCH_STEM)
 
     print(rendered)
 
-    if summary.any_changes or not summary.run.complete or EMAIL_WHEN_NOTHING_CHANGED:
-        notify(summary.headline, rendered)
+    if not SEND_EMAIL:
+        logger.info("SEND_EMAIL is off, so no mail")
+
+        return
+
+    anything_to_say = any(
+        result.summary is None
+        or result.summary.any_changes
+        or not result.summary.run.complete
+        for result in results
+    )
+    if anything_to_say or EMAIL_WHEN_NOTHING_CHANGED:
+        notify(subject, rendered)
     else:
         logger.info("Nothing changed and EMAIL_WHEN_NOTHING_CHANGED is off, so no mail")
 
