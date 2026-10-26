@@ -1,18 +1,7 @@
 """
 Which endpoint can actually give you the data, and at which version
 
-The report used to count datasets per endpoint and leave the reader to compare the
-column by eye. That reads as if the numbers are comparable and quietly is not: two
-endpoints both holding a dataset can be holding two different *versions* of it, and
-counting identities calls that agreement.
-
-Measured against CMIP6 `tas`/`mon`/`Amon`/`historical`, that distinction changes the
-answer rather than refining it. `esg-dn1.nsc.liu.se` holds every one of the 1011
-dataset identities any endpoint knows about, so by identity it is a complete source;
-it is also stale on 67 of them. By identity you need one endpoint to get everything.
-By version you need three.
-
-So everything here is computed at version level, against the newest version any
+Everything here is computed at version level, against the newest version any
 endpoint reported, and three outcomes are kept apart because they fail differently:
 
 - `current`  -- this endpoint has the newest usable version
@@ -20,14 +9,7 @@ endpoint reported, and three outcomes are kept apart because they fail different
                 not notice
 - `absent`   -- it has no usable version. You get nothing and you do notice
 
-Retracted versions are never the target. Five of those 1011 datasets have a retracted
-newest version, and treating it as the target would mark an endpoint holding the
-newest *usable* version as stale, while calling one holding data you must not use
-current. "There is new data" and "there is new data you must not use" are different
-pieces of news.
-
-Nothing here renders anything, and nothing here touches a database or a network: it
-is a pure function of the summaries `local.endpoints` already read back.
+Retracted versions are never the target and are not usable.
 """
 
 from __future__ import annotations
@@ -44,13 +26,14 @@ if TYPE_CHECKING:
 
     from local.endpoints import EndpointResult
 
+# Future TODO: may need to figure out how to handle
+# non-datetime formats of version, such as CMIP5.
 _DATED_VERSION = re.compile(r"\d{8}")
 """
 What a version we can order looks like
 
-CMIP versions are `YYYYMMDD`, which sorts chronologically as a string, and all 251
-distinct version strings in our CMIP6 search are of this form. The DRS does not
-guarantee it though, so a dataset with a version of any other shape is reported as
+CMIP versions are `YYYYMMDD`, which sorts chronologically as a string. The DRS does
+not guarantee it though, so a dataset with a version of any other shape is reported as
 unordered rather than sorted wrongly: guessing which of `v1` and `20200724` is newer
 would be inventing an answer.
 """
@@ -58,10 +41,6 @@ would be inventing an answer.
 _EXACT_COVER_LIMIT = 12
 """
 How many endpoints we will search exhaustively for a smallest covering set
-
-The search is over subsets, so it doubles with each endpoint. Nine endpoints is 512
-subsets and instant; past this we fall back to a greedy cover, which can be one
-endpoint larger than the true smallest but is honest about being a suggestion.
 """
 
 
@@ -144,7 +123,7 @@ class Coverage:
     The fewest endpoints which together hold the newest version of everything
 
     Empty when nothing was counted. One endpoint when a single one is a complete and
-    current source, which is the case worth knowing and, for CMIP6, is not true.
+    current source, which is the case worth knowing.
     """
 
     cover_is_exact: bool
@@ -163,11 +142,6 @@ def newest_usable_records(result: EndpointResult) -> dict[int, VersionRecord]:
     which reports only retracted versions of a dataset is not holding it for our
     purposes. An endpoint can report several versions of one dataset, and the one
     that matters is the best it can serve.
-
-    Returns the whole record rather than just the version string, because a report
-    which lists what differs needs the facets to name the rows by. Public so that the
-    pair comparison applies the same rule as the coverage table: two copies of "newest
-    usable" would be two chances to disagree about it.
 
     Parameters
     ----------

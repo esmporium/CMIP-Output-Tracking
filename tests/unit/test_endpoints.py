@@ -1,12 +1,5 @@
 """
 Tests of turning one question into one tracked search per endpoint
-
-The interesting part of `local.endpoints` is not that it builds a requirement, it is
-*which* requirement: two endpoints must hash differently, so that each gets its own
-history, while sending identical queries, so that we are comparing like with like.
-Both halves are asserted here because losing either one is silent. Losing the first
-merges nine histories into one; losing the second has us searching for a variable
-named after a data centre.
 """
 
 from __future__ import annotations

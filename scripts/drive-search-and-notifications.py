@@ -1,27 +1,5 @@
 """
 Run our tracked searches, record what changed, and tell people about it
-
-This is the entry point for the whole job, and the only place configuration lives.
-It takes no arguments: a job which runs itself from cron every morning has nobody
-there to pass any, so everything it needs is either written down below or, if it is
-a secret, read from the `.env` file beside it (see `.env.example`).
-
-What it does, in order:
-
-1. migrates (or creates) the database at [DB_PATH][]
-2. searches each endpoint in [ENDPOINTS][] separately, saving every result into that
-   database and recording each search as its own tracked search
-3. works out what changed at each endpoint since its own last complete run
-4. prints one report covering all of them
-5. emails it to [RECIPIENTS][]
-
-Each endpoint is searched on its own rather than letting esmporium pick whichever
-answers first. That is the whole point of this version of the job: whether east and
-west agree, and whether five Solr hosts answer one question the same way, is what we
-are trying to find out, and a search which stops at the first good answer can never
-tell us. See [local.endpoints][] for how one question becomes nine tracked searches.
-
-Run it with `make run-search-and-notifications`.
 """
 
 from __future__ import annotations
@@ -67,16 +45,9 @@ DB_VERSION_ID = "002"
 """
 Which database this job reads and writes
 
-Bump this to start a fresh database, e.g. because a search's definition changed
-enough that its history is no longer comparable. The old database stays on disk
-under its own version, so nothing is lost by moving on.
-
-`001` held a single CMIP7 search which did not pin `processing_id` and whose leaf
-role carried no endpoint. Both of those changed, so every requirement in it hashes
-differently now and its four runs are not comparable with anything here.
-
-Note that this is *our* version, not the schema's: esmporium migrates the schema
-itself, on every run, via `upgrade_to_head`.
+Bump this manually to start a fresh database, e.g. because a search's definition
+changed enough that its history is no longer comparable. The old database stays
+on disk under its own version, so nothing is lost by moving on.
 """
 
 DB_PATH = REPO_ROOT / "dbs" / f"{DB_VERSION_ID}_db.sqlite"
@@ -99,16 +70,7 @@ PROCESSING_IDS = {
 """
 The `processing_id` to pin, per project. These are *not* interchangeable.
 
-esmporium's `processing_id` is one canonical facet over two quite different project
-facets: it is CMIP6's `table_id`, where monthly `tas` lives in `Amon`, and CMIP7's
-`variable_branding_suffix`, where the same variable is published three times over as
-`tavg-`, `tminavg-` and `tmaxavg-h2m-hxy-u`. Asking CMIP7 for `Amon` matches nothing
-at all, silently -- it is a valid facet value, just not one anything is published
-under -- so this mapping is written out per project rather than shared.
-
-Pinning it is what lets the report drop the column: for the pattern effect we want
-the monthly mean, which is `tavg-h2m-hxy-u`, and without the pin CMIP7 returns all
-three brandings as near-identical rows distinguishable only by a column nobody reads.
+This is specific to the current SEARCH_STEM requirement.
 """
 
 QUERIES = {
@@ -131,12 +93,10 @@ the "several values" case the obvious one.
 """
 
 ENDPOINTS = (
-    # CMIP7 lives on the new STAC indexes. These two are meant to mirror each other,
-    # which is a claim worth checking every morning rather than believing.
+    # CMIP7
     Endpoint("CMIP7", "search.east.esgf.io", "east"),
     Endpoint("CMIP7", "search.west.esgf.io", "west"),
-    # CMIP6 on everything that serves it: four esgf1 Solr nodes, the esgf1.5 bridge
-    # at ORNL, and the two STAC indexes. Ordered loosely by how much they return.
+    # CMIP6
     Endpoint("CMIP6", "esg-dn1.nsc.liu.se", "nsc"),
     Endpoint("CMIP6", "esgf-node.ornl.gov", "ornl"),
     Endpoint("CMIP6", "esgf.nci.org.au", "nci"),
@@ -162,9 +122,7 @@ DETAILED_PROJECTS = ("CMIP7",)
 Which projects get a full changes table, one block per endpoint
 
 Everything else gets a single row per endpoint: how much it returned, and whether
-that differs from its own previous run. CMIP7 is the pattern effect case we are
-actually shaking out, so it gets the detail; CMIP6 is here to tell us how much the
-endpoints disagree, which is a number, not a table.
+that differs from its own previous run.
 """
 
 RECIPIENTS = (
@@ -176,20 +134,11 @@ RECIPIENTS = (
 SEND_EMAIL = True
 """
 Whether to email the report at all
-
-Turn this off while reshaping the layout. The report is printed either way, and the
-whole point of this stage of the work is to run the job repeatedly and read its
-output, which is not a good reason to mail two people nine times in an afternoon.
 """
 
 EMAIL_WHEN_NOTHING_CHANGED = True
 """
 Whether to send mail on a morning when nothing changed
-
-Left on deliberately. A quiet email is how you know the job is still running at
-all: silence from a cron job means "nothing changed" and "the server is broken"
-at the same time, and those need telling apart. Turn it off once the job has
-earned enough trust to be boring.
 """
 
 MAX_ROWS = 50

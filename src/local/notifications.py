@@ -1,10 +1,5 @@
 """
 Sending notifications about what a tracked search found
-
-The driver script holds the configuration (who to email, which search).
-This module holds only the mechanics of getting a message out,
-so that the credentials are read in one place
-and the sending can be tested without a driver.
 """
 
 from __future__ import annotations
@@ -54,12 +49,6 @@ class MissingEmailSettingError(ValueError):
 class EmailAuthenticationError(RuntimeError):
     """
     Raised when the mail server would not accept our credentials
-
-    This exists because what `smtplib` raises is often unhelpfully bare. Gmail
-    closes the connection on an `AUTH` it does not like rather than saying what was
-    wrong with it, so the underlying error is a `SMTPServerDisconnected` carrying
-    no detail at all -- which reads like a network problem when it is really a
-    password problem.
     """
 
     def __init__(self, settings: EmailSettings, cause: Exception) -> None:

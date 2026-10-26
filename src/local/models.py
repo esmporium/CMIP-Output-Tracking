@@ -1,37 +1,5 @@
 """
 Which models each endpoint can actually give you, and how much of each
-
-The coverage table counts datasets, which answers "how much of this search can I get
-here" but not "which models". Those come apart more than you would expect:
-`ACCESS-CM2` is served by five of our CMIP6 endpoints, but `nsc`, `ornl` and `nci`
-offer ten variants of it while `dkrz` offers three and `ceda` two. A tick in a column
-would call all five "has it".
-
-So a cell here is the number of that model's variants the endpoint can serve, not a
-tick. One row per model, one column per endpoint, which makes a model's row readable
-across and an endpoint's column readable down.
-
-A variant *satisfies* when the endpoint returned at least one non-retracted dataset
-for it, which is the same "usable" rule [local.coverage][] applies: a retracted
-dataset is not data you can work with. A model satisfies when any of its variants do.
-
-**A limitation to know before a requirement grows a second leaf.** Our requirement
-has one leaf, so every dataset an endpoint returned matches the query by
-construction, and "this variant satisfies the requirement" and "this variant appeared
-in the results" are the same statement. They stop being the same as soon as a
-requirement asks for two things at once -- `historical` *and* `piControl` for one
-variant, say -- because then a variant can appear in the results while satisfying only
-half of what was asked. This module would overstate in that case. Doing it properly
-needs to know which leaf each returned dataset answered, and `SearchRunVersion`
-records no link to the leaf which found it: the same gap in esmporium's schema that
-made [local.endpoints][] carry the endpoint in a leaf's role.
-
-esmporium does have a solver which answers satisfaction properly
-([esmporium.requirements.solve][]), and it is not usable here: it reads through a
-`DatabaseCatalogue`, which is built from the shared `Dataset` rows and has no notion
-of which run or which endpoint found them. It would answer "does this model satisfy
-the requirement given everything every endpoint has ever told us", which is a
-different question from the one this table asks.
 """
 
 from __future__ import annotations

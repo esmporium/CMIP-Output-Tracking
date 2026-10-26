@@ -1,26 +1,27 @@
 """
 What we rely on esmporium for, written down so that a version bump says so
-
-This repository pins esmporium at a single commit and we expect to move that pin
-often, following whatever is being worked on upstream. The hazard of doing that is
-that esmporium is still young: names move, fields get renamed, things which were
-exported stop being. If the first thing to notice is the cron job at 6am, we find
-out by not getting an email -- the one failure mode that looks exactly like "nothing
-changed today".
-
-So this file is the tripwire. It names every piece of esmporium's surface this
-repository touches, and it fails loudly, by name, the moment one of them moves.
-Run it immediately after `make pin-esmporium`; that is what the target does.
-
-Two rules for editing it:
-
-- it asserts on *names and shapes*, never on behaviour. Behaviour is esmporium's
-  own test suite's business, and duplicating it here would be a second copy to keep
-  in step for no gain.
-- when a name here legitimately changes upstream, fix the renderer and fix this
-  file in the same commit. A tripwire quietly loosened to make a bump pass is worse
-  than no tripwire, because it still looks like one.
 """
+
+# A note for developers:
+# This repository pins esmporium at a single commit and we expect to move that pin
+# often, following whatever is being worked on upstream. The hazard of doing that is
+# that esmporium is still young: names move, fields get renamed, things which were
+# exported stop being. If the first thing to notice is the cron job at 6am, we find
+# out by not getting an email -- the one failure mode that looks exactly like "nothing
+# changed today".
+
+# So this file is the tripwire. It names every piece of esmporium's surface this
+# repository touches, and it fails loudly, by name, the moment one of them moves.
+# Run it immediately after `make pin-esmporium`; that is what the target does.
+
+# Two rules for editing it:
+
+# - it asserts on *names and shapes*, never on behaviour. Behaviour is esmporium's
+#   own test suite's business, and duplicating it here would be a second copy to keep
+#   in step for no gain.
+# - when a name here legitimately changes upstream, fix the renderer and fix this
+#   file in the same commit. A tripwire quietly loosened to make a bump pass is worse
+#   than no tripwire, because it still looks like one.
 
 from __future__ import annotations
 

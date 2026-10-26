@@ -1,29 +1,30 @@
 """
 Asking one question of several search endpoints, one endpoint at a time
-
-A tracked search in esmporium is a question, and the endpoint it was asked of is not
-part of that question: `Requirement.requirement_hash` covers everything except the
-requirement's `name`, so "tas from east" and "tas from west" fingerprint identically
-and cannot both be stored. `SearchRunVersion` carries no host either, so one search
-spread across several endpoints cannot be pulled apart again afterwards.
-
-We want them apart. Whether east and west agree, and whether five Solr hosts answer
-the same question with the same answer, is the thing we are trying to find out, so
-each endpoint needs its own history, its own baseline and its own notion of a
-complete run.
-
-So this module makes the endpoint part of the question, by putting its tag in the
-leaf's role. The role is the only field we can vary which the search machinery never
-sends anywhere: `Leaf.role` is a label a later check refers to, it is not a facet, so
-`"tas-east"` and `"tas-west"` go out on the wire as byte-identical queries while
-hashing differently. Everything else -- one facade per selector, one host per run --
-falls out of that.
-
-It is a bend in esmporium's data model and it is meant to be visible as one. The
-upstream fix is a host on `SearchRunVersion`, or a leaf-to-version link table; with
-either, every endpoint below collapses back into a single tracked search with
-`stop_at_first_result=False`, and this module goes away.
 """
+
+# Potential future TODO:
+# A tracked search in esmporium is a question, and the endpoint it was asked of is not
+# part of that question: `Requirement.requirement_hash` covers everything except the
+# requirement's `name`, so "tas from east" and "tas from west" fingerprint identically
+# and cannot both be stored. `SearchRunVersion` carries no host either, so one search
+# spread across several endpoints cannot be pulled apart again afterwards.
+
+# We want them apart. Whether east and west agree, and whether five Solr hosts answer
+# the same question with the same answer, is the thing we are trying to find out, so
+# each endpoint needs its own history, its own baseline and its own notion of a
+# complete run.
+
+# So this module makes the endpoint part of the question, by putting its tag in the
+# leaf's role. The role is the only field we can vary which the search machinery never
+# sends anywhere: `Leaf.role` is a label a later check refers to, it is not a facet, so
+# `"tas-east"` and `"tas-west"` go out on the wire as byte-identical queries while
+# hashing differently. Everything else -- one facade per selector, one host per run --
+# falls out of that.
+
+# It is a bend in esmporium's data model and it is meant to be visible as one. The
+# upstream fix is a host on `SearchRunVersion`, or a leaf-to-version link table; with
+# either, every endpoint below collapses back into a single tracked search with
+# `stop_at_first_result=False`, and this module goes away.
 
 from __future__ import annotations
 
@@ -162,12 +163,6 @@ def endpoint_requirement(
 def single_facade_selector(endpoint: Endpoint) -> SearchAPIFacadeSelector:
     """
     Build a selector which offers `endpoint` and nothing else
-
-    The default selector works through a project's hosts in order and, with
-    `stop_at_first_result`, stops at the first which answers -- which is how every run
-    so far went to `search.east.esgf.io` and nowhere else. A one-facade selector is
-    what makes a run's answer attributable: exactly one host can have produced it, so
-    `SearchRunLeaf.host` and `run_is_complete` both mean what they say.
 
     Parameters
     ----------

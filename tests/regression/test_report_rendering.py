@@ -1,24 +1,5 @@
 """
 Regression tests on what the morning email looks like, across all nine endpoints
-
-The same bargain as `test_summary_rendering.py`, one level up: the value is not that
-the text is right -- we do not know yet what right looks like -- but that it is
-*visible*. A change to a heading, a column or the order of blocks is invisible in a
-diff of the renderer and obvious in a diff of its output, and this output is the
-thing we read over breakfast.
-
-So this is the file to work against while reshaping the report. Change
-`local.summary_formatting`, run the tests, and read the diff: it is the email, before
-and after. When the new version is the one you want, take it with
-
-    make accept-layout
-
-and commit the `.txt` files along with the change. Committing a regenerated fixture
-without reading the diff defeats the only purpose it has.
-
-The dataset counts are the real ones, measured against ESGF while this was written,
-because a fixture reading `nsc 3` teaches nobody what the report is for. The *rows*
-are few, because a fixture nobody can read by eye is not a review.
 """
 
 from __future__ import annotations

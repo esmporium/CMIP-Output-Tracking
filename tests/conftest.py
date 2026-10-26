@@ -40,16 +40,6 @@ REALISTIC_FACETS: dict[str, str] = {
 }
 """
 A plausible set of dataset facets, for the scenes whose facets get rendered
-
-Spelled out rather than derived from the column names, so that a rendered table
-reads like a real one: a checked-in regression file full of
-`reporting_interval-value` is one nobody can review by eye, which is the whole
-point of having it.
-
-Every key of esmporium's `DATASET_FACET_COLUMNS` must be present, which
-`test_the_scenes_fill_in_every_facet_column` pins. When esmporium adds a facet,
-that test is what tells us to add it here rather than letting the tables render a
-silent blank column.
 """
 
 

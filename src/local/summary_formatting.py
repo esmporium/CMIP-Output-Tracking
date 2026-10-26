@@ -1,37 +1,5 @@
 """
 Rendering an esmporium `SearchSummary` as text
-
-This is the layout half of the daily report, and it lives here rather than in
-esmporium on purpose. esmporium knows the database: it reads a window of runs and
-shapes it into a `SearchSummary`. It does not know what our morning email should
-look like, and we do not know either yet -- which is why this is the file we expect
-to churn, and why it sits in the repository that can churn it without a changelog,
-a deprecation or a release.
-
-The contract between the two is `SearchSummary` itself, plus its
-`changes_frame()` and `current_frame()`. Everything below is a pure function of
-that object: nothing here touches a database or a network, which is why the tests
-beside it need neither. If you find yourself wanting a *field* esmporium does not
-compute -- as opposed to a different arrangement of the fields it does -- that is
-the signal the change belongs upstream rather than here.
-
-The tables are drawn by hand rather than with `pandas.DataFrame.to_string`,
-deliberately. `to_string` carries index and dtype noise, and its output moves with
-the terminal width and with the pandas version, which is exactly what a checked-in
-regression file must not do. pandas is for the frames; the standard library is for
-the text.
-
-There are two levels here now. [format_summary][(m).] renders one tracked search,
-which is one endpoint; [format_report][(m).] puts several of them together, because we
-ask the same question of nine endpoints and the interesting part is often how their
-answers differ. Which projects get a full changes table and which get a one-line
-summary is the caller's choice, not this module's: see `detailed`.
-
-The output is plain fixed-width text because that is what
-`local.notifications.send_email` can carry intact: it goes out as a
-`text/plain` part and again inside a monospaced `<pre>`, so columns line up in a
-mail client either way. Anything which needs a proportional font would have to
-change both ends.
 """
 
 from __future__ import annotations
@@ -70,12 +38,6 @@ DEFAULT_FACETS: tuple[str, ...] = (
 """
 The facets every table shows unless it is told otherwise
 
-A subset of esmporium's `DATASET_FACET_COLUMNS`, chosen to cover the facets a search
-is most often spread across: several projects, several models, several experiments,
-several ensemble members, several variables, several frequencies. `institution` is
-left out because `model` implies it, `grid_label` and `processing_id` because they
-rarely vary within one search.
-
 This is a readability default, not a correctness one: rows are told apart by the `id`
 column, which is always shown, so narrowing this can never make two datasets
 indistinguishable. Widen it with the `facets` argument to [format_summary][(m).]
@@ -94,16 +56,6 @@ PATTERN_EFFECT_FACETS: tuple[str, ...] = (
 """
 The facets the pattern-effect report shows
 
-Narrower than [DEFAULT_FACETS][(m).] because the search pins the rest: one project,
-one variable, one experiment, one reporting interval and one `processing_id` are all
-fixed by the query, so a column of each would be the same value every row.
-
-`grid_label` is in and `processing_id` is out, which is the opposite of what
-`DEFAULT_FACETS` assumes about them. Both assumptions are right for their own search:
-`processing_id` splits CMIP7 `tas` three ways (`tavg-`, `tminavg-` and
-`tmaxavg-h2m-hxy-u`), which is exactly why the query pins it rather than why the table
-shows it, and `grid_label` varies across models within a single pinned search.
-
 The `id`, `version` and `retracted` columns are added by `_row_columns` regardless, so
 this is only what names a row, not what tells two rows apart.
 """
@@ -117,10 +69,6 @@ _SHORT_HEADERS: dict[str, str] = {
 }
 """
 Shorter headings for the columns whose canonical names are too wide to tabulate
-
-`reporting_interval` is an 18-character heading over 3-character values, and
-`grid_label` a 10-character one over 4-character values like `g150`. The frames keep
-the canonical names; this is only what a heading reads as.
 """
 
 
@@ -128,11 +76,7 @@ def _readable_list(values: Sequence[str]) -> str:
     """
     Render values as a list a person can read, e.g. `'a', 'b' and 'c'`
 
-    A copy of esmporium's own `readable_list`. Copied rather than imported because
-    that function is not part of esmporium's public API -- it is importable, but
-    exported from nothing -- and a prototype which reaches into a library's
-    unexported corners breaks on an upgrade for no good reason. It is twelve lines;
-    the copy is cheaper than the coupling.
+    A copy of esmporium's own `readable_list`.
 
     Parameters
     ----------
@@ -255,11 +199,6 @@ def _row_columns(
     up under the wrong heading: if the headings and the cells were built from the
     facet list separately, the two could be ordered differently and nothing would
     say so.
-
-    `id` leads, and is the reason narrowing `facets` is safe: two datasets can agree
-    on every facet we model and still be different rows (esmporium's uniqueness index
-    on `Dataset` includes `id_project_specific`), so the only honest way to tell rows
-    apart is to carry an identity.
     """
     columns: list[tuple[str, Callable[[VersionRecord], str]]] = [
         ("id", lambda version: str(version.dataset_version_id))
@@ -306,9 +245,7 @@ def render_table(
     Returns
     -------
     :
-        The table, with no trailing whitespace on any line. Trailing whitespace is
-        stripped because our own pre-commit would strip it from a checked-in
-        regression file, and then the test comparing the two would fail for no reason.
+        The table, with no trailing whitespace on any line.
 
     Examples
     --------
@@ -638,18 +575,6 @@ def format_summary(
 def _is_first_run(summary: SearchSummary) -> bool:
     """
     Work out whether this is the first run of its search
-
-    `baseline_run_id` cannot answer this on its own, which is subtle enough to be
-    worth writing down. esmporium reads it off the recorded changes, so it is `None`
-    in two quite different situations: a first run, which had no baseline to compare
-    against, and *any* quiet run, which recorded no changes and so recorded nothing
-    about what it was compared against either.
-
-    What tells them apart is whether anything changed: a first run reports every
-    dataset it found as an addition. The one case this cannot distinguish is a first
-    run which found nothing at all, which has no changes to report either -- so
-    callers must not render "no baseline" as "a previous run existed". See
-    [_window_lines][(m).], which says what it knows rather than guessing.
     """
     return summary.baseline_run_id is None and summary.any_changes
 
@@ -821,10 +746,6 @@ def compare_endpoint_summaries(
     the drift worth seeing -- so it is reported as its own category rather than folded
     into either side's "only in".
 
-    The exact comparison this rests on is possible because every endpoint's search
-    writes into the same `dataset` and `datasetversion` tables, so one dataset has one
-    id whichever host reported it.
-
     Parameters
     ----------
     first, second
@@ -913,14 +834,6 @@ def compare_endpoint_summaries(
 def format_model_support(support: ModelSupport, *, title: str) -> str:
     """
     Render which models each endpoint can serve, one row per model
-
-    A cell is how many of that model's variants the endpoint can serve, because
-    endpoints which both "have" a model routinely disagree about how much of it they
-    have: five of our CMIP6 endpoints serve `ACCESS-CM2`, and they offer ten, ten,
-    ten, three and two variants of it.
-
-    Every model is listed, never folded away behind a row cap. The list is the point
-    of the table, and a model quietly elided is a model you cannot see.
 
     Parameters
     ----------

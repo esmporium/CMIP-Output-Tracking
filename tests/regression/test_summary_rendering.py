@@ -1,21 +1,6 @@
 """
 Regression tests on what the morning email looks like
 
-The value here is not that the text is right -- we do not know yet what right
-looks like, which is the whole reason the renderer lives in this repository. The
-value is that the text is *visible*. A change to a heading, a column or the order
-of sections is invisible in a diff of the renderer and obvious in a diff of its
-output, and this output is the thing we read over breakfast.
-
-So this is the file to work against while reshaping the layout. Change
-`local.summary_formatting`, run the tests, and read the diff: it is the email,
-before and after. When the new version is the one you want, take it with
-
-    uv run pytest tests/regression --force-regen
-
-and commit the `.txt` files along with the change. Committing a regenerated
-fixture without reading the diff defeats the only purpose it has.
-
 Every summary is built by hand, so none of this needs a database, a network or a
 live ESGF.
 """
