@@ -36,17 +36,20 @@ RUN HEALTH
 CURRENT STATE (4 datasets)
 
 EAST vs WEST
-  east has 5, west has 4 dataset versions -- THEY DIVERGE
+  east has 5, west has 4 datasets -- THEY DIVERGE
+  1 only in east, 0 only in west, 0 at different versions
   only in east (1)
     id   model         variant   grid  version   retracted
     105  CNRM-ESM2-1e  r1i1p1f2  g105  20261018  no
 
-CMIP6 (7 endpoints)
-  endpoint  host                 datasets  vs last run
-  nsc       esg-dn1.nsc.liu.se       1184  no changes
-  ornl      esgf-node.ornl.gov       1180  no changes
-  nci       esgf.nci.org.au          1184  no changes
-  dkrz      esgf-data.dkrz.de        1150  no changes
-  ceda      esgf.ceda.ac.uk           991  no changes
-  east      search.east.esgf.io       461  no changes
-  west      search.west.esgf.io       461  no changes
+CMIP6 (7 of 7 answered; 1030 datasets at newest usable version)
+  endpoint  host                 current  stale  absent  vs last run
+  nsc       esg-dn1.nsc.liu.se      1030      0       0  no changes
+  ornl      esgf-node.ornl.gov       901      2     127  no changes
+  nci       esgf.nci.org.au          800      0     230  no changes
+  dkrz      esgf-data.dkrz.de        716      9     305  no changes
+  ceda      esgf.ceda.ac.uk          723      1     306  no changes
+  east      search.east.esgf.io      480      0     550  no changes
+  west      search.west.esgf.io      480      0     550  no changes
+  nsc alone holds the newest version of all 1030
+  11 datasets served at different versions; nsc has the newest of 11

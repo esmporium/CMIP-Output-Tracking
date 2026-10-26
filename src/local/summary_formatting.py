@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING
 from esmporium.datasets import DATASET_FACET_COLUMNS
 from esmporium.db import DatasetChangeType, describe_moved
 
+from local.coverage import Coverage, coverage_of, newest_usable_records
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -670,23 +672,58 @@ def _change_counts(summary: SearchSummary) -> str:
     )
 
 
+def _datasets(n: int) -> str:
+    """Count datasets, agreeing with itself about whether there is one of them."""
+    return f"{n} dataset" if n == 1 else f"{n} datasets"
+
+
+def _cover_lines(coverage: Coverage) -> list[str]:
+    """Say what it takes to get the newest version of everything."""
+    cover = coverage.smallest_cover
+    if not cover:
+        return []
+
+    if len(cover) == 1:
+        return [
+            f"  {cover[0]} alone holds the newest version of all {coverage.n_datasets}"
+        ]
+
+    said = " + ".join(cover)
+    hedge = "" if coverage.cover_is_exact else " (a good set, not provably smallest)"
+
+    return [
+        f"  no endpoint holds the newest version of all {coverage.n_datasets}",
+        f"  fewest that do: {said}{hedge}",
+    ]
+
+
 def format_endpoint_overview(
     results: Sequence[EndpointResult],
+    coverage: Coverage,
     *,
     title: str,
 ) -> str:
     """
     Render several endpoints' answers as one row each
 
-    For the projects we watch but do not want a changes table of: how much each
-    endpoint returned, and whether that differs from its own previous run. Reading
-    down the `datasets` column is reading how much the endpoints agree with each
-    other, which is a separate question from whether any of them changed.
+    For the projects we watch but do not want a changes table of. The three count
+    columns are a version-level comparison across the endpoints, not three facts
+    about each one on its own: `current` means this endpoint has the newest version
+    any endpoint reported, `stale` that it has an older one, `absent` that it has no
+    usable version at all. They sum to the same total on every row, which is what
+    makes the table readable down a column as well as across a row.
+
+    `stale` and `absent` are kept apart because they fail differently. An absent
+    dataset gives you nothing and you notice; a stale one gives you old data and you
+    do not.
 
     Parameters
     ----------
     results
         The endpoints' results, rendered in the order given
+
+    coverage
+        What [coverage_of][local.coverage.coverage_of] made of those same results
 
     title
         What to call this block, e.g. the project name
@@ -696,26 +733,55 @@ def format_endpoint_overview(
     :
         The block, with no trailing newline
     """
-    failed = [result for result in results if result.summary is None]
-    counted = f"{len(results)} endpoints"
-    if failed:
-        counted = f"{counted}, {len(failed)} failed"
+    counted = f"{coverage.n_answered} of {coverage.n_endpoints} answered"
+    if coverage.n_datasets:
+        counted = f"{counted}; {coverage.n_datasets} datasets at newest usable version"
 
-    headers = ["endpoint", "host", "datasets", "vs last run"]
-    rows = [
-        [
-            result.endpoint.tag,
-            result.endpoint.host,
-            "-" if result.summary is None else str(result.n_datasets),
-            "FAILED" if result.summary is None else _change_counts(result.summary),
-        ]
-        for result in results
-    ]
+    by_tag = {endpoint.tag: endpoint for endpoint in coverage.endpoints}
+
+    headers = ["endpoint", "host", "current", "stale", "absent", "vs last run"]
+    rows = []
+    for result in results:
+        seen = by_tag.get(result.endpoint.tag)
+        rows.append(
+            [
+                result.endpoint.tag,
+                result.endpoint.host,
+                "-" if seen is None else str(seen.current),
+                "-" if seen is None else str(seen.stale),
+                "-" if seen is None else str(seen.absent),
+                "FAILED" if result.summary is None else _change_counts(result.summary),
+            ]
+        )
 
     lines = [
         f"{title} ({counted})",
-        render_table(headers, rows, right=("datasets",)),
+        render_table(headers, rows, right=("current", "stale", "absent")),
+        *_cover_lines(coverage),
     ]
+
+    if coverage.contested:
+        leader = max(coverage.endpoints, key=lambda e: e.ahead_on, default=None)
+        said = f"  {_datasets(coverage.contested)} served at different versions"
+        if leader is not None and leader.ahead_on:
+            said = f"{said}; {leader.tag} has the newest of {leader.ahead_on}"
+        lines.append(said)
+
+    # Said out loud rather than left to make the totals quietly not add up. Both
+    # lines are kept short enough to survive a mail client at a sensible width: the
+    # body goes out as fixed-width text and a line which wraps takes the table's
+    # columns with it.
+    if coverage.unordered:
+        lines.append(
+            f"  {_datasets(coverage.unordered)} with an unorderable version, "
+            "not judged above"
+        )
+
+    if coverage.unusable:
+        lines.append(
+            f"  {_datasets(coverage.unusable)} retracted everywhere, "
+            "so not counted above"
+        )
 
     # Said under the table rather than in a column, for the same reason `what moved`
     # is: a reason is free text and would set the table's width on its own.
@@ -746,12 +812,17 @@ def compare_endpoint_summaries(
     """
     Say whether two endpoints returned the same thing
 
-    Compared on `dataset_version_id`, which is an exact comparison rather than a
-    hopeful one: every endpoint's search writes into the same `dataset` and
-    `datasetversion` tables, so the same dataset at the same version has the same id
-    whichever host reported it. Two endpoints holding different *versions* of one
-    dataset therefore reads as a difference, which is what we want -- one node lagging
-    another by a version is precisely the drift worth seeing.
+    Compared at version level, on the newest usable version each endpoint reported,
+    which is the same rule
+    [newest_usable_records][local.coverage.newest_usable_records] applies for the
+    coverage table. Two endpoints both holding a dataset at two different versions is
+    a difference, not agreement -- one node lagging another by a version is precisely
+    the drift worth seeing -- so it is reported as its own category rather than folded
+    into either side's "only in".
+
+    The exact comparison this rests on is possible because every endpoint's search
+    writes into the same `dataset` and `datasetversion` tables, so one dataset has one
+    id whichever host reported it.
 
     Parameters
     ----------
@@ -759,7 +830,7 @@ def compare_endpoint_summaries(
         The two endpoints to compare
 
     max_rows
-        How many differing rows to show per side
+        How many differing rows to show per category
 
     facets
         Which dataset facets to name the differing rows by. `None` uses
@@ -779,39 +850,59 @@ def compare_endpoint_summaries(
             result.endpoint.tag for result in (first, second) if result.summary is None
         ]
 
+        return [heading, f"  cannot compare: {_readable_list(silent)} did not answer"]
+
+    here = newest_usable_records(first)
+    there = newest_usable_records(second)
+
+    only_here = sorted(set(here) - set(there))
+    only_there = sorted(set(there) - set(here))
+    differing = sorted(
+        dataset
+        for dataset in set(here) & set(there)
+        if here[dataset].version != there[dataset].version
+    )
+
+    if not (only_here or only_there or differing):
         return [
             heading,
-            f"  cannot compare: {_readable_list(silent)} did not answer",
-        ]
-
-    here = {version.dataset_version_id: version for version in first.summary.current}
-    there = {version.dataset_version_id: version for version in second.summary.current}
-
-    if set(here) == set(there):
-        return [
-            heading,
-            f"  {one} and {other} agree, on all {len(here)} dataset versions",
+            f"  {one} and {other} agree, on all {len(here)} datasets "
+            "at the same versions",
         ]
 
     lines = [
         heading,
-        f"  {one} has {len(here)}, {other} has {len(there)} "
-        "dataset versions -- THEY DIVERGE",
+        f"  {one} has {len(here)}, {other} has {len(there)} datasets -- THEY DIVERGE",
+        f"  {len(only_here)} only in {one}, {len(only_there)} only in {other}, "
+        f"{len(differing)} at different versions",
     ]
 
     columns = _row_columns(shown)
     headers = [header for header, _ in columns]
-    for tag, only in (
-        (one, [here[key] for key in sorted(set(here) - set(there))]),
-        (other, [there[key] for key in sorted(set(there) - set(here))]),
-    ):
+    for tag, holdings, only in ((one, here, only_here), (other, there, only_there)):
         if not only:
             continue
 
-        rows = [[read(version) for _, read in columns] for version in only]
+        rows = [[read(holdings[dataset]) for _, read in columns] for dataset in only]
         kept, left_out = _capped(rows, max_rows)
         lines.append(f"  only in {tag} ({len(only)})")
         lines.append(render_table(headers, kept, indent="    "))
+        if left_out:
+            lines.append(f"    ... (+{left_out} more)")
+
+    if differing:
+        # Both versions side by side, because which of the two is behind is the whole
+        # point and a single `version` column could not say.
+        naming = _row_columns(shown)[:-2]
+        version_headers = [header for header, _ in naming] + [one, other]
+        rows = [
+            [read(here[dataset]) for _, read in naming]
+            + [here[dataset].version, there[dataset].version]
+            for dataset in differing
+        ]
+        kept, left_out = _capped(rows, max_rows)
+        lines.append(f"  at different versions ({len(differing)})")
+        lines.append(render_table(version_headers, kept, indent="    "))
         if left_out:
             lines.append(f"    ... (+{left_out} more)")
 
@@ -884,9 +975,15 @@ def format_report(
             result for result in results if result.endpoint.project == project
         ]
 
+        # One coverage per project, because a tag only identifies an endpoint within
+        # a project: `east` is two different searches across CMIP6 and CMIP7.
+        coverage = coverage_of(of_project)
+
         if project not in detailed:
             blocks.append(
-                format_endpoint_overview(of_project, title=project).splitlines()
+                format_endpoint_overview(
+                    of_project, coverage, title=project
+                ).splitlines()
             )
             continue
 

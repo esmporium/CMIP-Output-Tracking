@@ -32,21 +32,61 @@ ADDED = DatasetChangeType.ADDED
 REMOVED = DatasetChangeType.REMOVED
 MODIFIED = DatasetChangeType.MODIFIED
 
-CMIP6_DATASETS = {
-    "nsc": 1184,
-    "ornl": 1180,
-    "nci": 1184,
-    "dkrz": 1150,
-    "ceda": 991,
-    "east": 461,
-    "west": 461,
+NEWEST = "20200724"
+SUPERSEDED = "20190914"
+"""Two plausible CMIP6 version stamps, one superseding the other"""
+
+CMIP6_COVERAGE = {
+    "nsc": (1010, 0),
+    "ornl": (901, 2),
+    "nci": (800, 0),
+    "dkrz": (716, 9),
+    "ceda": (723, 1),
+    "east": (460, 0),
+    "west": (460, 0),
 }
 """
-How many datasets each CMIP6 endpoint returns, roughly as measured
+How much of CMIP6 each endpoint can serve, as `(at the newest version, superseded)`
 
-The spread is the point. These hosts are answering one question and the answers are
-not the same, which is most of why the CMIP6 block exists at all.
+Taken from a real run rather than invented, because the shape is the whole point and
+it is not the shape you would guess. `nsc` holds every dataset any endpoint knows
+about; `dkrz` and `ceda` hold a lot but are quietly behind on a handful; the two STAC
+indexes hold under half and are never behind on what they do hold.
 """
+
+STAC_ONLY = 20
+"""
+Datasets only the STAC indexes and `nsc` carry
+
+Here so that `nsc` is not merely the biggest endpoint but the only complete one, and
+so that losing it costs more than its own row: without `nsc`, no single endpoint can
+serve everything and the report has to say which combination can.
+"""
+
+
+def cmip6_holdings(summary_scenes, tag):
+    """
+    Build what one CMIP6 endpoint reported, as a run saw it
+
+    Dataset ids are shared across endpoints on purpose: that is what makes the
+    comparison exact, and it is true of the real database, where every endpoint's
+    search writes into the same `dataset` table.
+    """
+    current, stale = CMIP6_COVERAGE[tag]
+    held = [
+        summary_scenes.version(
+            dataset_version_id=1000 + n,
+            version_string=NEWEST if n < current else SUPERSEDED,
+        )
+        for n in range(current + stale)
+    ]
+    if tag in ("nsc", "east", "west"):
+        held += [
+            summary_scenes.version(dataset_version_id=9000 + n, version_string=NEWEST)
+            for n in range(STAC_ONLY)
+        ]
+
+    return tuple(held)
 
 
 def report(results):
@@ -90,12 +130,9 @@ def cmip6_results(summary_scenes):
         summary_scenes.result(
             tag,
             project="CMIP6",
-            current=tuple(
-                summary_scenes.version(dataset_version_id=1000 + n)
-                for n in range(count)
-            ),
+            current=cmip6_holdings(summary_scenes, tag),
         )
-        for tag, count in CMIP6_DATASETS.items()
+        for tag in CMIP6_COVERAGE
     ]
 
 
@@ -178,7 +215,9 @@ def test_an_endpoint_is_down(
             ),
             # Rebuilt in the order the job asks them in, because the report's order is
             # the caller's order and a fixture which scrambles it teaches the wrong
-            # thing about the output.
+            # thing about the output. `nsc` is the one that fails, deliberately: it is
+            # the only complete source, so losing it is what forces the report to work
+            # out which combination of the rest can still serve everything.
             *[
                 summary_scenes.result("nsc", project="CMIP6", failure="read timeout")
                 if result.endpoint.tag == "nsc"

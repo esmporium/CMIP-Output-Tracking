@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from esmporium.db import DatasetChangeType
 
+from local.coverage import coverage_of
 from local.summary_formatting import (
     compare_endpoint_summaries,
     format_endpoint_overview,
@@ -23,43 +24,58 @@ ADDED = DatasetChangeType.ADDED
 REMOVED = DatasetChangeType.REMOVED
 
 
+def overview(results, title="CMIP6"):
+    """Render the overview the way the report does, coverage and all."""
+    return format_endpoint_overview(results, coverage_of(results), title=title)
+
+
+def counts_by_tag(rendered):
+    """
+    Read the current/stale/absent columns out of a rendered overview
+
+    Picks table rows by their host cell rather than by their leading tag, because the
+    notes under the table start with a tag too -- `nsc alone holds the newest ...`
+    matches a naive prefix check and silently parses as a row of counts.
+    """
+    rows = {}
+    for line in rendered.splitlines():
+        cells = line.split()
+        if len(cells) >= 5 and "." in cells[1]:
+            rows[cells[0]] = cells[2:5]
+
+    return rows
+
+
 def test_a_failed_endpoint_does_not_read_as_an_empty_one(summary_scenes):
     # The failure mode this exists to stop: `ceda  0  no changes` is a sentence about
     # ESGF, and what happened was a timeout. A reader must not be able to confuse
     # "this endpoint holds nothing" with "we could not ask it".
-    rendered = format_endpoint_overview(
+    rendered = overview(
         [
             summary_scenes.result("nci", project="CMIP6"),
             summary_scenes.result("ceda", project="CMIP6", failure="read timeout"),
-        ],
-        title="CMIP6",
+        ]
     )
 
-    assert "0" not in rendered.split("ceda")[1].split("\n")[0]
+    ceda_row = next(line for line in rendered.splitlines() if "ceda" in line)
+
+    assert "0" not in ceda_row
+    assert "-" in ceda_row
     assert "FAILED" in rendered
     assert "read timeout" in rendered
-    assert "1 failed" in rendered
+    assert "1 of 2 answered" in rendered
 
 
 def test_an_incomplete_run_is_called_out(summary_scenes):
     # A short count from a truncated run looks exactly like datasets going away.
-    rendered = format_endpoint_overview(
-        [
-            summary_scenes.result(
-                "nsc",
-                project="CMIP6",
-                health=summary_scenes.run(complete=False),
-            )
-        ],
-        title="CMIP6",
-    )
+    rendered = overview([summary_scenes.result("nsc", project="CMIP6", complete=False)])
 
     assert "INCOMPLETE" in rendered
 
 
 def test_a_first_run_is_not_reported_as_a_change(summary_scenes):
     # Everything is an addition on a first run, which is not news about ESGF.
-    rendered = format_endpoint_overview(
+    rendered = overview(
         [
             summary_scenes.result(
                 "east",
@@ -80,7 +96,7 @@ def test_a_quiet_run_is_not_mistaken_for_a_first_one(summary_scenes):
     # was pinned.
     quiet = summary_scenes.result("nci", project="CMIP6", baseline_run_id=None)
 
-    rendered = format_endpoint_overview([quiet], title="CMIP6")
+    rendered = overview([quiet])
     detailed = format_summary(quiet.summary)
 
     assert "no changes" in rendered
@@ -104,7 +120,7 @@ def test_a_first_run_which_found_nothing_claims_neither(summary_scenes):
 
 
 def test_change_counts_appear_per_endpoint(summary_scenes):
-    rendered = format_endpoint_overview(
+    rendered = overview(
         [
             summary_scenes.result(
                 "nci",
@@ -114,8 +130,7 @@ def test_change_counts_appear_per_endpoint(summary_scenes):
                     summary_scenes.change(REMOVED),
                 ),
             )
-        ],
-        title="CMIP6",
+        ]
     )
 
     assert "+1 -1 ~0" in rendered
@@ -150,7 +165,7 @@ def test_divergence_names_which_side_is_missing_what(summary_scenes):
     assert "only in east (1)" in rendered
     assert "UKESM1-3-LL" in rendered
     # Nothing is only in west, so west gets no empty table of its own.
-    assert "only in west" not in rendered
+    assert "only in west (" not in rendered
 
 
 def test_a_silent_endpoint_cannot_be_compared(summary_scenes):
@@ -200,7 +215,7 @@ def test_a_project_not_asked_for_detail_gets_one_row_each(summary_scenes):
     # CMIP7 got blocks, so its run health is in there; CMIP6 got a row.
     assert "RUN HEALTH" in rendered
     assert rendered.count("RUN HEALTH") == 2
-    assert "CMIP6 (1 endpoints)" in rendered
+    assert "CMIP6 (1 of 1 answered)" in rendered
 
 
 def test_the_report_ends_in_exactly_one_newline(summary_scenes):
@@ -252,3 +267,184 @@ def test_the_subject_leads_with_a_failure(summary_scenes):
     )
 
     assert subject.startswith("[1 FAILED]")
+
+
+def test_stale_is_not_absent(summary_scenes):
+    # The distinction the three columns exist for. ceda has the dataset, just an
+    # older copy: you get old data and nothing tells you. dkrz has no copy at all:
+    # you get nothing and you notice.
+    rendered = overview(
+        [
+            summary_scenes.result(
+                "nsc",
+                project="CMIP6",
+                current=(summary_scenes.version(dataset_version_id=101),),
+            ),
+            summary_scenes.result(
+                "ceda",
+                project="CMIP6",
+                current=(
+                    summary_scenes.version(
+                        dataset_version_id=101, version_string="20190914"
+                    ),
+                ),
+            ),
+            summary_scenes.result("dkrz", project="CMIP6", current=()),
+        ]
+    )
+    rows = counts_by_tag(rendered)
+
+    assert rows["nsc"] == ["1", "0", "0"]
+    assert rows["ceda"] == ["0", "1", "0"]
+    assert rows["dkrz"] == ["0", "0", "1"]
+    assert "1 dataset served at different versions" in rendered
+
+
+def test_one_complete_endpoint_is_said_to_be_enough(summary_scenes):
+    rendered = overview(
+        [
+            summary_scenes.result(
+                "nsc",
+                project="CMIP6",
+                current=(summary_scenes.version(dataset_version_id=101),),
+            ),
+            summary_scenes.result("dkrz", project="CMIP6", current=()),
+        ]
+    )
+
+    assert "nsc alone holds the newest version of all 1" in rendered
+
+
+def test_when_no_endpoint_is_enough_the_smallest_set_is_named(summary_scenes):
+    # The number actually worth having: how many endpoints you must combine to get
+    # the newest copy of everything.
+    rendered = overview(
+        [
+            summary_scenes.result(
+                "nsc",
+                project="CMIP6",
+                current=(summary_scenes.version(dataset_version_id=101),),
+            ),
+            summary_scenes.result(
+                "ornl",
+                project="CMIP6",
+                current=(summary_scenes.version(dataset_version_id=202),),
+            ),
+        ]
+    )
+
+    assert "no endpoint holds the newest version of all 2" in rendered
+    assert "fewest that do: nsc + ornl" in rendered
+
+
+def test_a_retracted_version_is_never_the_target(summary_scenes):
+    # "There is new data" and "there is new data you must not use" are different
+    # pieces of news. ornl's newer copy is retracted, so nsc's older one is the
+    # newest *usable* version and nsc must not read as stale.
+    rendered = overview(
+        [
+            summary_scenes.result(
+                "nsc",
+                project="CMIP6",
+                current=(
+                    summary_scenes.version(
+                        dataset_version_id=101, version_string="20190914"
+                    ),
+                ),
+            ),
+            summary_scenes.result(
+                "ornl",
+                project="CMIP6",
+                current=(
+                    summary_scenes.version(
+                        dataset_version_id=101,
+                        version_string="20200724",
+                        retracted=True,
+                    ),
+                ),
+            ),
+        ]
+    )
+    rows = counts_by_tag(rendered)
+
+    assert rows["nsc"] == ["1", "0", "0"]
+    # ornl holds only a retracted copy, which is not a copy you can use.
+    assert rows["ornl"] == ["0", "0", "1"]
+
+
+def test_a_dataset_nobody_has_usably_is_set_aside(summary_scenes):
+    rendered = overview(
+        [
+            summary_scenes.result(
+                "nsc",
+                project="CMIP6",
+                current=(
+                    summary_scenes.version(dataset_version_id=101, retracted=True),
+                ),
+            )
+        ]
+    )
+
+    assert "1 dataset retracted everywhere" in rendered
+    assert "not counted above" in rendered
+
+
+def test_an_unorderable_version_is_not_guessed_at(summary_scenes):
+    # CMIP versions are YYYYMMDD and sort chronologically as strings. Anything else
+    # is reported as unjudged rather than sorted wrongly.
+    rendered = overview(
+        [
+            summary_scenes.result(
+                "nsc",
+                project="CMIP6",
+                current=(
+                    summary_scenes.version(dataset_version_id=101, version_string="v1"),
+                ),
+            )
+        ]
+    )
+
+    assert "1 dataset with an unorderable version" in rendered
+
+
+def test_a_version_difference_shows_both_versions(summary_scenes):
+    # Which of the two is behind is the whole point, and one `version` column could
+    # not say it.
+    lines = compare_endpoint_summaries(
+        summary_scenes.result(
+            "east",
+            current=(
+                summary_scenes.version(
+                    "NorCPM1", dataset_version_id=101, version_string="20190914"
+                ),
+            ),
+        ),
+        summary_scenes.result(
+            "west",
+            current=(
+                summary_scenes.version(
+                    "NorCPM1", dataset_version_id=101, version_string="20200724"
+                ),
+            ),
+        ),
+    )
+    rendered = "\n".join(lines)
+
+    assert "at different versions (1)" in rendered
+    assert "20190914" in rendered
+    assert "20200724" in rendered
+    # Neither side is "only in" the other: both have the dataset, so neither gets a
+    # table of its own. The summary line still counts them, as `0 only in east`.
+    assert "only in east (" not in rendered
+    assert "only in west (" not in rendered
+
+
+def test_agreement_means_same_datasets_at_same_versions(summary_scenes):
+    shared = (summary_scenes.version(dataset_version_id=101),)
+
+    lines = compare_endpoint_summaries(
+        summary_scenes.result("east", current=shared),
+        summary_scenes.result("west", current=shared),
+    )
+
+    assert "at the same versions" in "\n".join(lines)

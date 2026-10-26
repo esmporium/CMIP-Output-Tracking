@@ -35,16 +35,19 @@ RUN HEALTH
 CURRENT STATE (4 datasets)
 
 EAST vs WEST
-  east and west agree, on all 4 dataset versions
+  east and west agree, on all 4 datasets at the same versions
 
-CMIP6 (7 endpoints, 1 failed)
-  endpoint  host                 datasets  vs last run
-  nsc       esg-dn1.nsc.liu.se          -  FAILED
-  ornl      esgf-node.ornl.gov       1180  no changes
-  nci       esgf.nci.org.au          1184  no changes
-  dkrz      esgf-data.dkrz.de        1150  no changes
-  ceda      esgf.ceda.ac.uk           991  no changes
-  east      search.east.esgf.io       461  no changes
-  west      search.west.esgf.io       461  no changes
+CMIP6 (6 of 7 answered; 923 datasets at newest usable version)
+  endpoint  host                 current  stale  absent  vs last run
+  nsc       esg-dn1.nsc.liu.se         -      -       -  FAILED
+  ornl      esgf-node.ornl.gov       903      0      20  no changes
+  nci       esgf.nci.org.au          800      0     123  no changes
+  dkrz      esgf-data.dkrz.de        716      9     198  no changes
+  ceda      esgf.ceda.ac.uk          723      1     199  no changes
+  east      search.east.esgf.io      480      0     443  no changes
+  west      search.west.esgf.io      480      0     443  no changes
+  no endpoint holds the newest version of all 923
+  fewest that do: ornl + east
+  9 datasets served at different versions; ornl has the newest of 9
   FAILED  nsc (esg-dn1.nsc.liu.se): read timeout
   INCOMPLETE  ceda (esgf.ceda.ac.uk): count may be short, and not a usable baseline
