@@ -259,7 +259,7 @@ oranges.
 Adding a facet value is the easy case — each facet is a tuple:
 
 ```python
-variable=("tas", "pr"),
+variable = (("tas", "pr"),)
 ```
 
 This still changes the requirement's meaning, so it still needs a new name.
