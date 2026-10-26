@@ -128,19 +128,102 @@ not a login shell: it starts with a nearly empty `PATH`, reads no profile, and h
 no useful working directory. The wrapper puts all of that back, logs each run to
 `logs/`, and exits non-zero if the job fails.
 
-Install it with `crontab -e`:
+#### What time is 7am in Melbourne?
 
-```cron
-MAILTO=your.address@example.com
-15 7 * * * /full/path/to/CMIP-Output-Tracking/scripts/run-daily.sh
+This is the one part worth doing slowly, because Melbourne is not on one offset all
+year and cron does not know that:
+
+| | local time | in UTC |
+| --- | --- | --- |
+| 7am **AEST** (April–October) | 07:00 | **21:00 the previous day** |
+| 7am **AEDT** (October–April) | 07:00 | **20:00 the previous day** |
+
+So there is no single UTC time that is 7am in Melbourne. A job fixed at 21:00 UTC
+is 7am through winter and 8am through summer; a job fixed at 20:00 UTC is the
+other way round. Either is fine if you only care that the mail is waiting when you
+start work, and neither needs touching twice a year.
+
+Some crons can do the conversion for you, if you name the zone instead of the
+offset: `CRON_TZ=Australia/Melbourne` applies to the entries after it and tracks
+daylight saving by itself. RHEL's `cronie` has this; the `cron` on our server
+(`cmip6-crunching`, Debian) does **not**, so we use the fixed UTC time. Check
+before relying on it, and check the binary rather than the man page, because a
+server with no man pages installed looks exactly like a cron without the feature:
+
+```sh
+grep -ac CRON_TZ /usr/sbin/cron   # 0 means it is genuinely not supported
 ```
 
-That runs at 07:15 every morning. Pick a time that suits you; there is nothing
-special about overnight, since ESGF publishes continuously.
+Note that `TZ` is not an alternative: Debian's cron passes it to the job's
+environment but ignores it when deciding when to fire.
 
-`MAILTO` is worth setting. It is cron's own notification, and it is the only one
-left if the job dies *before* it can send its own email — if the machine cannot
-reach ESGF, say, or if the mail settings are wrong.
+#### Install it
+
+Everything in this repository reaches the server by `git pull`. Two things never
+do, and they are the whole of the setup: the `.env` file, which is git-ignored on
+purpose, and the crontab, which lives in cron's own storage rather than in any
+file you can commit.
+
+```sh
+cd /path/to/CMIP-Output-Tracking
+git pull
+
+# 1. The secrets. This is the step that is easy to forget, and the job cannot
+#    send anything without it: `EmailSettings.from_env()` raises before it gets
+#    as far as the mail server.
+cp .env.example .env
+$EDITOR .env
+
+# 2. A run by hand, before cron ever tries. This really does email the
+#    recipients, which is the point: it tests the mail path, not just the search.
+./scripts/run-daily.sh
+
+# 3. Only once that works, schedule it.
+crontab -e
+```
+
+`crontab -e` opens an editor (`EDITOR=nano crontab -e` if you want nano). On a
+server which has never had a crontab you will find it either empty or full of
+commented-out explanation; either way nothing in it needs changing. The lines go
+at the bottom. This is what is installed on `cmip6-crunching`, which keeps its
+clock in UTC:
+
+```cron
+MAILTO=azehrung@student.unimelb.edu.au
+
+# Daily CMIP search + email, 21:00 UTC = 7am AEST
+0 21 * * * /data/azehrung/CMIP-Output-Tracking/scripts/run-daily.sh
+```
+
+Saving installs it; `crontab: installing new crontab` is the confirmation, and
+`crontab -l` reads it back.
+
+`MAILTO` is cron's own notification, and it is the only one left if the job dies
+*before* it can send its own email — if the server cannot reach ESGF, say, or if
+the mail settings are wrong. Without it a broken job is perfectly silent.
+
+#### The first run on a new server starts from scratch
+
+`dbs/` is not committed, so a server which has never run the job has no history to
+compare against and will report everything it finds as "added". That is correct and
+it only happens once: that run *is* the baseline, and every run after it reports
+the difference. Do not read the first morning's email as news.
+
+#### Keeping up with a moving esmporium
+
+`make run-search-and-notifications` calls `uv run`, which syncs the environment
+from `uv.lock` before running anything. So the whole of deploying a new esmporium
+pin — or a new email layout — is:
+
+```sh
+git pull
+```
+
+The next scheduled run picks it up. There is no separate `uv sync` step to
+remember, and nothing to restart. What this does mean is that a commit which
+breaks the job breaks tomorrow's email, so it is worth having `make test` pass
+before pushing: `tests/unit/test_esmporium_contract.py` is there precisely so that
+a rename upstream fails by name rather than as an email that never arrives.
 
 ### Check that it is working
 

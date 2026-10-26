@@ -6,10 +6,16 @@
 # working directory to speak of. Everything this script does is about putting that
 # back, so that the job behaves the same whether you ran it or cron did.
 #
-# Install it with `crontab -e`, e.g. to run at 07:15 every morning:
+# Install it with `crontab -e`. To run at 7am on the Melbourne wall clock all year,
+# name the zone and let cron work out the offset:
 #
 #   MAILTO=you@example.com
-#   15 7 * * * /path/to/CMIP-Output-Tracking/scripts/run-daily.sh
+#   CRON_TZ=Australia/Melbourne
+#   0 7 * * * /path/to/CMIP-Output-Tracking/scripts/run-daily.sh
+#
+# On a server kept in UTC, `0 21 * * *` is 7am AEST exactly, but becomes 8am local
+# once daylight saving starts: there is no one UTC time that is 7am all year. See
+# the README for the table.
 #
 # MAILTO is worth setting: cron mails whatever the job prints to stderr, which is
 # the only notification left if the job dies before it can send its own.
