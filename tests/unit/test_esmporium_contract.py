@@ -67,6 +67,9 @@ MODULE_LEVEL_NAMES: dict[str, tuple[str, ...]] = {
         # What `local.node_health` summarises the recorded attempts with
         "DataNodeHealth",
         "aggregate_data_node_health",
+        # The row `local.node_health.read_fetch_time` reads the timings off, because
+        # `DataNodeHealth` keeps the throughput and the bytes but not the time
+        "DataNodeCallRecord",
         # The rows `local.downloads.describe_results` reads an identity back out of
         "Dataset",
         "DatasetVersion",
@@ -174,6 +177,9 @@ ATTRIBUTES_READ: dict[str, tuple[str, ...]] = {
     "File": ("id", "filename", "dataset_version_id", "size", "checksum"),
     "DatasetVersion": ("id", "version", "dataset_id"),
     "Dataset": ("id", "model", "variant_label", "grid_label"),
+    # Read by `local.node_health.read_fetch_time`. `seconds` is the whole reason that
+    # function exists; `created_at` is what the first-to-last span is measured over.
+    "DataNodeCallRecord": ("seconds", "created_at"),
 }
 """
 Every attribute of an esmporium summary type that our renderer reads

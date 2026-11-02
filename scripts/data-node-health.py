@@ -15,6 +15,12 @@ not per file -- because `local.downloads.run_downloads` passes
 `record_data_node_calls` as its observer. So a file fetched on the third try from the
 second mirror contributed four rows, and `attempts` is larger than any file count.
 
+The time at the foot is transfer time summed over every attempt, including the failed
+ones: it leaves out retry backoff and anything that is not a fetch, and it is
+wall-clock only because esmporium's download loop is sequential today. Where that
+differs from the first-to-last span by more than a minute, both are reported, because
+over more than one night the span is mostly the idle time between runs.
+
 **This has to be run on the machine that did the downloading.** The database is
 git-ignored, so the copy in a clone has the table and none of the rows.
 """
@@ -30,7 +36,7 @@ from esmporium.db import aggregate_data_node_health, configure_sqlite_for_concur
 from sqlalchemy.exc import OperationalError
 from sqlmodel import create_engine
 
-from local.node_health import format_node_health
+from local.node_health import format_node_health, read_fetch_time
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 """
@@ -167,6 +173,11 @@ def main(argv: list[str] | None = None) -> int:
     since = None if args.days is None else datetime.timedelta(days=args.days)
     try:
         health = aggregate_data_node_health(engine, since=since)
+        # The same `since`, deliberately: two reads of one table, so the time cannot
+        # end up describing a different window than the table above it. A second read
+        # rather than one, because classifying outcomes is esmporium's job and only
+        # the timing is missing from what it hands back.
+        took = read_fetch_time(engine, since=since)
     except OperationalError as exc:
         # The likeliest cause by far is an older database: `datanodecallrecord`
         # arrived with the download tables, so `001_db.sqlite` has search history and
@@ -182,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Database: {args.db}")
     print()
-    print(format_node_health(health, window=window_phrase(args.days)), end="")
+    print(format_node_health(health, took, window=window_phrase(args.days)), end="")
 
     return 0
 

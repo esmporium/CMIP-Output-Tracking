@@ -8,15 +8,22 @@ the same as the rest of this suite.
 
 from __future__ import annotations
 
+import datetime
+
+import pytest
 from esmporium.datasets import DownloadOutcome
 from esmporium.db import DataNodeHealth
 
 from local.node_health import (
+    FetchTime,
     attributable_failures,
     describe_failures,
     format_node_health,
     ok_rate,
+    readable_duration,
 )
+
+UTC = datetime.timezone.utc
 
 
 def health(data_node: str = "esgf.nci.org.au", **overrides: object) -> DataNodeHealth:
@@ -179,3 +186,114 @@ def test_it_ends_in_one_newline_and_has_no_trailing_whitespace():
     assert rendered.endswith("\n")
     assert not rendered.endswith("\n\n")
     assert all(line == line.rstrip() for line in rendered.splitlines())
+
+
+def took(
+    seconds: float, *, first: datetime.datetime | None = None, days: float = 0.0
+) -> FetchTime:
+    """
+    Build a run's timing
+
+    `days` spreads the first and last attempt apart, which is how a window covering
+    several nightly runs differs from one covering a single bulk run.
+    """
+    start = first if first is not None else datetime.datetime(2026, 10, 30, 21, 0)
+
+    return FetchTime(
+        seconds=seconds,
+        first=start,
+        last=start + datetime.timedelta(days=days, seconds=seconds),
+    )
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (0.0, "0.0s"),
+        (0.42, "0.4s"),
+        # Below ten seconds keeps a decimal: a single attempt against a nearby node
+        # is over in a fraction of a second, and `0s` reads as "no time at all".
+        (9.9, "9.9s"),
+        (18, "18s"),
+        (60, "1m"),
+        (252, "4m 12s"),
+        # Never a unit that is zero, and never three of them.
+        (10800, "3h"),
+        (11520, "3h 12m"),
+        (183600, "2d 3h"),
+        (172800, "2d"),
+    ],
+)
+def test_durations_are_rendered_the_way_a_person_would_say_them(seconds, expected):
+    assert readable_duration(seconds) == expected
+
+
+def test_the_total_time_is_reported_once_at_the_foot():
+    node = health(n_calls=300, n_success=300, total_bytes=19_500_000_000)
+
+    rendered = format_node_health(
+        {node.data_node: node}, took(13_800), window="all history"
+    )
+
+    assert "3h 50m spent fetching, summed over every attempt" in rendered
+
+
+def test_there_is_no_per_node_time_column():
+    # How long one node took is only interesting divided by what it served, which is
+    # what `MB/s` already is. A second time column would be the same fact twice.
+    node = health(n_calls=300, n_success=300, total_bytes=19_500_000_000)
+
+    rendered = format_node_health(
+        {node.data_node: node}, took(13_800), window="all history"
+    )
+
+    header = rendered.splitlines()[1]
+    assert "MB/s" in header
+    assert "time" not in header
+
+
+def test_without_a_timing_nothing_is_said_about_time():
+    # A caller holding only a health mapping should get no timing line, rather than a
+    # figure it never measured.
+    node = health(n_calls=1, n_success=1)
+
+    rendered = format_node_health({node.data_node: node}, window="all history")
+
+    assert "spent fetching" not in rendered
+    assert "first attempt" not in rendered
+
+
+def test_a_single_run_does_not_bother_reporting_its_span():
+    # Over one run the span and the summed time are within a few per cent of each
+    # other, so saying both would be saying it twice.
+    node = health(n_calls=300, n_success=300)
+
+    rendered = format_node_health(
+        {node.data_node: node}, took(13_800), window="all history"
+    )
+
+    assert "spent fetching" in rendered
+    assert "first attempt" not in rendered
+
+
+def test_a_window_of_several_nights_says_the_span_is_mostly_idle():
+    # The number that would otherwise get quoted as "the download took three days".
+    # Four hours of fetching spread over three nights: both figures are true and only
+    # one of them is the download time.
+    node = health(n_calls=309, n_success=309)
+
+    rendered = format_node_health(
+        {node.data_node: node}, took(13_980, days=3), window="all history"
+    )
+
+    assert "3h 53m spent fetching" in rendered
+    assert "first attempt 2026-10-30 21:00 UTC" in rendered
+    assert "includes any time between runs" in rendered
+
+
+def test_the_elapsed_span_is_not_the_time_spent_fetching():
+    # The distinction the report is built around, pinned on the dataclass itself.
+    spread = took(13_980, days=3)
+
+    assert spread.seconds == 13_980
+    assert spread.elapsed > datetime.timedelta(days=3)

@@ -252,21 +252,50 @@ make data-node-health ARGS="--days 7"      # how they are behaving lately
 
 ```text
 DATA NODE HEALTH (all history)
-  node                   attempts   ok  failed   ok%  MB/s   served
-  esgf.ceda.ac.uk              27   22       5   81%   4.4   1.3 GB
+  node                   attempts   ok  failed   ok%   served  MB/s
+  esgf.ceda.ac.uk              27   22       5   81%   1.3 GB   4.4
       5 refused us (403, 429 or 503)
-  esgf.nci.org.au             302  300       2   99%  18.5  18.2 GB
+  esgf.nci.org.au             302  300       2   99%  18.2 GB  18.5
       2 timed out
-  crd-esgf-drc.ec.gc.ca         9    0       0     -     -      0 B
+  crd-esgf-drc.ec.gc.ca         9    0       0     -      0 B     -
       9 had nothing there (404), which is not the node's fault
 
   3 nodes, 338 attempts, 19.5 GB served
+  25m 3s spent fetching, summed over every attempt
 ```
 
 Worst first, rather than alphabetically like every other table here: the reason to
 open this is to find out whether a node has gone bad, and in a list of nine the one
 that has should not be eighth. Ties -- which on a clean run is every row -- break on
 how much we asked of the node.
+
+Speed is per node and time is not. How long one node took is only interesting divided
+by what it served, which is what `MB/s` already is, so a per-node time column would
+be the same fact twice -- while the *total* is the figure somebody actually asks for.
+
+**There are two honest answers to "how long did it take", and they can be days
+apart.** The one at the foot is transfer time, summed over every attempt including the
+failed ones -- each measured from just before the request to just after the checksum,
+so it leaves out the retry backoff and everything that is not a fetch. It is
+wall-clock time only because esmporium's download loop is sequential on purpose
+today; if that is ever parallelised it becomes worker-time, and the wording has to
+change with it.
+
+The other answer is the span from the first attempt to the last, and over a window
+covering several nightly runs that is mostly the idle days between them. So the span
+is only printed once it differs from the fetching time by more than a minute, and
+when it is, it is given as two dates with a note rather than as a single duration that
+would get quoted as the download time:
+
+```text
+  3h 53m spent fetching, summed over every attempt
+  first attempt 2026-10-30 21:00 UTC, last 2026-11-02 21:03 UTC (3d apart, which includes any time between runs)
+```
+
+The time comes from a second read of the same table over the same window, because
+esmporium's `DataNodeHealth` keeps `median_throughput_mb_per_s` and `total_bytes` but
+throws the time away -- so `local.node_health.read_fetch_time` goes to
+`DataNodeCallRecord.seconds` itself. The outcome classification stays upstream.
 
 It is read-only and deliberately does **not** migrate the database, unlike every
 other entry point, so it is safe to point at a copy of the production one. It has to
