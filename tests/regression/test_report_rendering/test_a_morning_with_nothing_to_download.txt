@@ -65,4 +65,4 @@ CMIP6  models with at least one satisfying variant
   8 models have at least one variant which satisfies the requirement
 
 About to download
-  nothing new to fetch
+  nothing new to fetch; it is all already here

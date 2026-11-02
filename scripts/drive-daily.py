@@ -321,7 +321,13 @@ def plan_everything(engine: Engine, root: Path) -> tuple[DownloadIntent, ...]:
         One intent per requirement which downloads, in [REQUIREMENTS][] order
     """
     return tuple(
-        intend(tracked.label, plan_only(engine, tracked.query, root))
+        intend(
+            tracked.label,
+            plan_only(engine, tracked.query, root),
+            # Everything we know of, fetched or not, so that "nothing to fetch" can
+            # say which kind of nothing it is.
+            n_known=len(plan_only(engine, tracked.query, root, skip_done=False)),
+        )
         for tracked in downloading()
     )
 

@@ -295,7 +295,13 @@ def test_a_morning_with_something_to_download(
         ],
         summary_scenes,
         intents=(
-            DownloadIntent(label="CMIP7", n_files=2, n_bytes=130691052, n_unsized=0),
+            DownloadIntent(
+                label="CMIP7",
+                n_files=2,
+                n_bytes=130691052,
+                n_unsized=0,
+                n_known=327,
+            ),
         ),
     )
 
@@ -320,7 +326,11 @@ def test_a_morning_with_nothing_to_download(
             *cmip6_results,
         ],
         summary_scenes,
-        intents=(DownloadIntent(label="CMIP7", n_files=0, n_bytes=0, n_unsized=0),),
+        intents=(
+            DownloadIntent(
+                label="CMIP7", n_files=0, n_bytes=0, n_unsized=0, n_known=325
+            ),
+        ),
     )
 
     file_regression.check(rendered, extension=".txt")

@@ -474,13 +474,30 @@ def format_download_intent(intents: Sequence[DownloadIntent], *, root: Path) -> 
     if not intents:
         return ""
 
+    if all(intent.nothing_known for intent in intents):
+        # Not the same as having everything, though both have nothing to fetch.
+        # A database which has been created or migrated but not searched since has
+        # no file records at all, and a download planned against one finds nothing
+        # to do for a reason which has nothing to do with downloading.
+        return (
+            "About to download\n"
+            "  nothing: no files are recorded yet, so a search has not run since "
+            "this\n  database was created or migrated. Run the search first."
+        )
+
     if all(intent.nothing_to_do for intent in intents):
-        return "About to download\n  nothing new to fetch"
+        return "About to download\n  nothing new to fetch; it is all already here"
 
     lines = ["About to download"]
     for intent in intents:
+        if intent.nothing_known:
+            lines.append(f"  {intent.label}: nothing recorded yet -- has a search run?")
+            continue
+
         if intent.nothing_to_do:
-            lines.append(f"  {intent.label}: nothing new")
+            lines.append(
+                f"  {intent.label}: nothing new ({intent.n_known} already here)"
+            )
             continue
 
         line = (

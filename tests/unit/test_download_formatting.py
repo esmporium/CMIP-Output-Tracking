@@ -8,15 +8,18 @@ second copy of the layout to keep in step. These are the things a diff would sho
 you without telling you they were wrong.
 """
 
+from pathlib import Path
+
 import pytest
 from esmporium.datasets import DownloadOutcome
 
 from local.download_formatting import (
     download_subject,
+    format_download_intent,
     format_download_report,
     readable_bytes,
 )
-from local.downloads import IDENTITY_FACETS
+from local.downloads import IDENTITY_FACETS, DownloadIntent
 
 
 def _report(scenes, records, **totals):
@@ -218,3 +221,80 @@ def test_each_requirement_gets_its_own_block(download_scenes):
 
     assert "CMIP7 this run" in rendered
     assert "CMIP8 this run" in rendered
+
+
+def _intent(**kwargs):
+    """Build a download intent, defaulting to an empty but searched database."""
+    return DownloadIntent(
+        **{
+            "label": "CMIP7",
+            "n_files": 0,
+            "n_bytes": 0,
+            "n_unsized": 0,
+            "n_known": 325,
+            **kwargs,
+        }
+    )
+
+
+def test_an_unsearched_database_says_so_rather_than_saying_nothing_to_fetch():
+    # The failure this exists for, which really happened on the server: a freshly
+    # migrated database has no file records, so the plan is empty and the dry run
+    # reported "nothing new to fetch" -- which reads as "you already have it all".
+    # Opposite situations, identical message. The fix is to say which it is.
+    rendered = format_download_intent(
+        [_intent(n_known=0)], root=Path("/data/cmip7-scratch")
+    )
+
+    assert "a search has not run" in rendered
+    assert "already here" not in rendered
+
+
+def test_having_everything_reads_differently_from_knowing_nothing():
+    rendered = format_download_intent(
+        [_intent(n_known=325)], root=Path("/data/cmip7-scratch")
+    )
+
+    assert "already here" in rendered
+    assert "search has not run" not in rendered
+
+
+def test_an_intent_with_work_names_the_disk_it_is_about_to_fill():
+    rendered = format_download_intent(
+        [_intent(n_files=12, n_bytes=2_100_000_000)],
+        root=Path("/data/cmip7-scratch"),
+    )
+
+    assert "CMIP7: 12 file(s), 2.0 GB" in rendered
+    assert "/data/cmip7-scratch" in rendered
+
+
+def test_files_of_unpublished_size_are_named_not_rounded_away():
+    # Otherwise `0 B across 0 of them` reads as "nothing to fetch" when there is
+    # plenty -- the count is the only thing that says otherwise.
+    rendered = format_download_intent(
+        [_intent(n_files=3, n_bytes=0, n_unsized=3)], root=Path("/data/x")
+    )
+
+    assert "+3 of unpublished size" in rendered
+
+
+def test_one_requirement_knowing_nothing_does_not_silence_another():
+    # With two requirements downloading, one of them being unsearched must not make
+    # the whole block read as "run a search": the other one's work is still real.
+    rendered = format_download_intent(
+        [
+            _intent(label="CMIP7", n_files=2, n_bytes=1024),
+            _intent(label="CMIP8", n_known=0),
+        ],
+        root=Path("/data/x"),
+    )
+
+    assert "CMIP7: 2 file(s)" in rendered
+    assert "CMIP8: nothing recorded yet" in rendered
+
+
+def test_no_requirement_downloading_renders_nothing_at_all():
+    # A report for questions that are only ever watched should not carry a heading
+    # about downloading.
+    assert format_download_intent([], root=Path("/data/x")) == ""

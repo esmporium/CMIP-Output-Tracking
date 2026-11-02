@@ -156,13 +156,36 @@ class DownloadIntent:
     as "nothing to fetch" when there is plenty.
     """
 
+    n_known: int
+    """
+    How many files we know about for this requirement at all, fetched or not
+
+    The difference between "you already have everything" and "nobody has told us
+    what exists yet", which are opposite situations that otherwise read identically:
+    both have nothing to fetch. A freshly migrated database has no file records
+    until a search writes them, and a download planned against one finds nothing to
+    do for a reason that has nothing to do with the download.
+    """
+
     @property
     def nothing_to_do(self) -> bool:
         """Whether there is nothing to fetch for this requirement"""
         return not self.n_files
 
+    @property
+    def nothing_known(self) -> bool:
+        """
+        Whether we have no file records for this requirement at all
 
-def intend(label: str, plan: Sequence[DownloadPlanItem]) -> DownloadIntent:
+        Nearly always means a search has not run since the database was created or
+        migrated. See [n_known][(c).n_known].
+        """
+        return not self.n_known
+
+
+def intend(
+    label: str, plan: Sequence[DownloadPlanItem], *, n_known: int
+) -> DownloadIntent:
     """
     Add a plan up into what it is about to do
 
@@ -172,7 +195,11 @@ def intend(label: str, plan: Sequence[DownloadPlanItem]) -> DownloadIntent:
         Which tracked requirement this is the plan for
 
     plan
-        What [plan_only][(m).] returned
+        What [plan_only][(m).] returned, i.e. what is still to fetch
+
+    n_known
+        How many files we know about for this requirement at all. From
+        [plan_only][(m).] with `skip_done=False`.
 
     Returns
     -------
@@ -190,11 +217,12 @@ def intend(label: str, plan: Sequence[DownloadPlanItem]) -> DownloadIntent:
         n_files=len(plan),
         n_bytes=sum(sized),
         n_unsized=len(plan) - len(sized),
+        n_known=n_known,
     )
 
 
 def plan_only(
-    engine: Engine, query: QueryProtocol, root: Path
+    engine: Engine, query: QueryProtocol, root: Path, *, skip_done: bool = True
 ) -> tuple[DownloadPlanItem, ...]:
     """
     Work out what a download would fetch, without fetching any of it
@@ -214,13 +242,17 @@ def plan_only(
     root
         The directory the files would go into
 
+    skip_done
+        Whether to leave out the files we already have. `False` plans every file we
+        know of, which is how to ask "what exists?" rather than "what is missing?".
+
     Returns
     -------
     :
-        One item per file which is not already here
+        One item per file, in a stable order
     """
     with Session(engine) as session:
-        return plan_downloads(session, query, root)
+        return plan_downloads(session, query, root, skip_done=skip_done)
 
 
 def run_downloads(
