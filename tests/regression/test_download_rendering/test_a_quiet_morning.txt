@@ -1,0 +1,11 @@
+Subject: pattern-effect downloads: nothing new
+
+CMIP7 this run
+  0 file(s): 0 fetched, 0 already here, 0 failed
+  0 B moved into /data/cmip
+
+Nothing to do: everything the search has found is already on disk.
+
+In the database
+  325 file(s) (325 done)
+  nothing outstanding

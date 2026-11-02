@@ -27,13 +27,23 @@ from __future__ import annotations
 
 import datetime
 import importlib
+import inspect
 
+import esmporium.datasets
 import esmporium.db
+import esmporium.downloads
 import pytest
 from esmporium.db import DatasetChangeType
 
 MODULE_LEVEL_NAMES: dict[str, tuple[str, ...]] = {
-    "esmporium.datasets": ("DATASET_FACET_COLUMNS",),
+    "esmporium.datasets": (
+        "DATASET_FACET_COLUMNS",
+        # What a route is made of and how an attempt ended, read by the download
+        # report and built by its fixtures
+        "AccessService",
+        "ContainerFormat",
+        "DownloadOutcome",
+    ),
     "esmporium.db": (
         # The summary types our renderer is a function of
         "ChangeRecord",
@@ -47,9 +57,37 @@ MODULE_LEVEL_NAMES: dict[str, tuple[str, ...]] = {
         # What the driver script needs to run and record a search
         "configure_sqlite_for_concurrency",
         "search_and_track",
+        # What the download job needs to plan, fetch, record and report
+        "DownloadPlanItem",
+        "DownloadSummary",
+        "download",
+        "download_summary",
+        "plan_downloads",
+        "record_data_node_calls",
+        # The rows `local.downloads.describe_results` reads an identity back out of
+        "Dataset",
+        "DatasetVersion",
+        "File",
     ),
     "esmporium.db.migrate": ("upgrade_to_head",),
-    "esmporium.query": ("Query",),
+    "esmporium.downloads": (
+        # The result types the download report is a pure function of
+        "DownloadRequest",
+        "DownloadResult",
+        "FetchOutcome",
+        "Route",
+        "RouteFailure",
+        "RunTotals",
+        "totals",
+        # Where a file goes on our disk. Named here because the layout is part of
+        # the contract: moving it moves every file we have already downloaded.
+        "FileTarget",
+        "esmporium_layout",
+        "local_path",
+        # Raised by a fetch, and built by the fixtures which pretend to be one
+        "DataNodeFetchError",
+    ),
+    "esmporium.query": ("Query", "QueryProtocol"),
     "esmporium.requirements": ("Requirement", "leaf", "requirement"),
     # What `local.endpoints` needs to ask one endpoint and only that endpoint
     "esmporium.search.search_api_facade": (
@@ -104,6 +142,14 @@ ATTRIBUTES_READ: dict[str, tuple[str, ...]] = {
         "truncated",
     ),
     "SearchRunLeafInfo": ("label", "failure", "n_documents", "n_matches"),
+    "DownloadSummary": ("n_by_status", "n_total", "n_outstanding"),
+    "DownloadPlanItem": ("request",),
+    # Read by `local.downloads.describe_results` to say which dataset a downloaded
+    # file belongs to. A column renamed upstream would otherwise show up as a report
+    # full of `-`, which reads as "ESGF published nothing" rather than as a bug.
+    "File": ("id", "filename", "dataset_version_id", "size", "checksum"),
+    "DatasetVersion": ("id", "version", "dataset_id"),
+    "Dataset": ("id", "model", "variant_label", "grid_label"),
 }
 """
 Every attribute of an esmporium summary type that our renderer reads
@@ -111,6 +157,45 @@ Every attribute of an esmporium summary type that our renderer reads
 Keyed by the type's name in `esmporium.db`. Read off `local.summary_formatting`
 by hand: if you teach the renderer to read a new field, add it here, because a
 field we read and do not list is a field that can vanish silently.
+"""
+
+
+DOWNLOAD_ATTRIBUTES_READ: dict[str, tuple[str, ...]] = {
+    "DownloadResult": ("request", "fetch", "failures", "skipped", "succeeded"),
+    "DownloadRequest": (
+        "routes",
+        "dest",
+        "file_id",
+        "expected_size",
+        "checksum",
+        "checksum_type",
+    ),
+    "FetchOutcome": (
+        "path",
+        "bytes_written",
+        "size_on_disk",
+        "checksum_verified",
+        "checksum_type_used",
+        "resumed",
+        "route",
+    ),
+    "RouteFailure": ("route", "outcome", "error"),
+    "Route": ("url", "data_node", "service", "container_format", "data_access_id"),
+    "RunTotals": (
+        "n_files",
+        "n_fetched",
+        "n_skipped",
+        "n_failed",
+        "n_given_up",
+        "bytes_fetched",
+    ),
+}
+"""
+Every attribute of an esmporium download type that our renderer or its fixtures read
+
+Keyed by the type's name in `esmporium.downloads`. Separate from
+[ATTRIBUTES_READ][] only because these types are exported from a different module,
+and the module is half of what is being pinned.
 """
 
 
@@ -232,3 +317,51 @@ def test_a_role_may_still_carry_our_endpoint_tag():
     # facet; if that stops being true, both endpoints start searching for a variable
     # named after a data centre.
     assert east.tree.query == west.tree.query
+
+
+@pytest.mark.parametrize(
+    ("type_name", "attribute"),
+    [
+        (type_name, attribute)
+        for type_name, attributes in DOWNLOAD_ATTRIBUTES_READ.items()
+        for attribute in attributes
+    ],
+)
+def test_the_download_types_still_carry_what_we_read(type_name, attribute):
+    download_type = getattr(esmporium.downloads, type_name)
+
+    available = set(getattr(download_type, "__dataclass_fields__", {})) | set(
+        dir(download_type)
+    )
+
+    assert attribute in available, (
+        f"esmporium's {type_name} no longer has {attribute!r}, which "
+        "local.download_formatting reads. Update the renderer and this list together."
+    )
+
+
+def test_the_download_layout_is_still_the_one_our_files_are_already_in():
+    # Not behaviour for its own sake: this layout is where every file we have
+    # already downloaded *is*. If esmporium changes it, a download run stops seeing
+    # what is on disk and quietly fetches the whole archive again under new paths.
+    # So this is pinned as a path, not as a name.
+    placed = esmporium.downloads.esmporium_layout(
+        esmporium.downloads.FileTarget(
+            id_project_specific="MIP-DRS7.CMIP7.CMIP.UKNCSP.UKESM1-3-LL",
+            version="20261020",
+            filename="tas.nc",
+        )
+    )
+
+    assert placed.as_posix() == (
+        "MIP-DRS7/CMIP7/CMIP/UKNCSP/UKESM1-3-LL/v20261020/tas.nc"
+    )
+
+
+def test_a_download_is_still_planned_from_the_same_query_a_search_takes():
+    # The whole reason `local.job_config.QUERIES` can be shared between the two
+    # jobs. If `download` stopped accepting what `search_and_track` accepts, the two
+    # would need translating and they could drift apart.
+    parameters = inspect.signature(esmporium.db.download).parameters
+
+    assert list(parameters)[:3] == ["engine", "query", "root"]

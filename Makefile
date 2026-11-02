@@ -60,6 +60,18 @@ pin-esmporium:  ## point esmporium at another commit, e.g. make pin-esmporium RE
 	@echo "esmporium is now pinned at:"
 	@grep -o 'esmporium.git?rev=[^"]*' uv.lock | head -1
 
-.PHONY: run-search-and-notifications
-run-search-and-notifications:  ## run the whole job: search, update the database, report the changes and email them
-	uv run python scripts/drive-search-and-notifications.py
+.PHONY: run-daily
+run-daily:  ## the whole job: search, email what changed, download what is new, email that
+	uv run python scripts/drive-daily.py $(ARGS)
+
+.PHONY: run-search-only
+run-search-only:  ## search, update the database and email what changed; download nothing
+	uv run python scripts/drive-daily.py --search-only
+
+.PHONY: run-downloads-only
+run-downloads-only:  ## download what the last search found, without searching again
+	uv run python scripts/drive-daily.py --download-only
+
+.PHONY: downloads-dry-run
+downloads-dry-run:  ## say how many files and how many bytes a download would fetch, and fetch nothing
+	uv run python scripts/drive-daily.py --dry-run

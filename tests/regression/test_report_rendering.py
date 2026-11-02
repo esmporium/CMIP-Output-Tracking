@@ -4,9 +4,13 @@ Regression tests on what the morning email looks like, across all nine endpoints
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 import pytest
 from esmporium.db import DatasetChangeType
 
+from local.download_formatting import format_download_intent
+from local.downloads import DownloadIntent
 from local.summary_formatting import PATTERN_EFFECT_FACETS, format_report
 
 ADDED = DatasetChangeType.ADDED
@@ -96,14 +100,32 @@ def cmip6_holdings(summary_scenes, tag):
     return tuple(held)
 
 
-def report(results):
-    """Render a report the way the job does, so the fixture is what gets mailed."""
-    return format_report(
-        results,
-        detailed=("CMIP7",),
+DOWNLOAD_ROOT = PurePosixPath("/data/cmip")
+"""
+Where the job would be downloading to
+
+A `PurePosixPath` so the checked-in copy renders identically whoever runs the tests.
+"""
+
+
+def report(results, summary_scenes, intents=()):
+    """
+    Render the search email the way the job does, so the fixture is what gets mailed
+
+    Including the composition: the download plan is appended to the search report by
+    the driver, not by the renderer, so a fixture which only called `format_report`
+    would be a copy of something nobody receives.
+    """
+    rendered = format_report(
+        summary_scenes.groups(results, detailed=("CMIP7",)),
         max_rows=50,
         facets=PATTERN_EFFECT_FACETS,
     )
+    intent_block = format_download_intent(intents, root=DOWNLOAD_ROOT)
+    if intent_block:
+        rendered = f"{rendered}\n{intent_block}\n"
+
+    return rendered
 
 
 @pytest.fixture
@@ -157,7 +179,8 @@ def test_a_quiet_morning(
             summary_scenes.result("east", current=cmip7_datasets),
             summary_scenes.result("west", current=cmip7_datasets),
             *cmip6_results,
-        ]
+        ],
+        summary_scenes,
     )
 
     file_regression.check(rendered, extension=".txt")
@@ -192,7 +215,8 @@ def test_east_and_west_disagree(
             ),
             summary_scenes.result("west", current=cmip7_datasets),
             *cmip6_results,
-        ]
+        ],
+        summary_scenes,
     )
 
     file_regression.check(rendered, extension=".txt")
@@ -236,7 +260,67 @@ def test_an_endpoint_is_down(
                 )
                 for result in cmip6_results
             ],
-        ]
+        ],
+        summary_scenes,
+    )
+
+    file_regression.check(rendered, extension=".txt")
+
+
+def test_a_morning_with_something_to_download(
+    file_regression, summary_scenes, cmip7_datasets, cmip6_results
+):
+    """
+    The email that goes out *before* the download starts
+
+    A new variant turned up in CMIP7, so there are files to fetch. The plan is
+    appended to the search report and emailed immediately, so that a box which dies
+    part way through a long download has still told somebody it was busy.
+
+    This is the only report in which the two halves of the job appear together, and
+    it is the one almost every working morning produces.
+    """
+    arrived = summary_scenes.version(
+        "CanESM6-0-MR", "historical", "r26i1p1f1", 107, grid_label="g150"
+    )
+    rendered = report(
+        [
+            summary_scenes.result(
+                "east",
+                current=(*cmip7_datasets, arrived),
+                changes=(summary_scenes.change(ADDED, of=arrived),),
+            ),
+            summary_scenes.result("west", current=(*cmip7_datasets, arrived)),
+            *cmip6_results,
+        ],
+        summary_scenes,
+        intents=(
+            DownloadIntent(label="CMIP7", n_files=2, n_bytes=130691052, n_unsized=0),
+        ),
+    )
+
+    file_regression.check(rendered, extension=".txt")
+
+
+def test_a_morning_with_nothing_to_download(
+    file_regression, summary_scenes, cmip7_datasets, cmip6_results
+):
+    """
+    The same email on a morning when everything is already on disk
+
+    Worth its own copy because it is the common case, and because "nothing new to
+    fetch" has to be said rather than left as an absent section -- an email which
+    simply stops after the search tables cannot be told from one where the download
+    planning fell over.
+    """
+    rendered = report(
+        [
+            summary_scenes.result("east", current=cmip7_datasets),
+            summary_scenes.result("west", current=cmip7_datasets),
+            *cmip6_results,
+        ],
+        summary_scenes,
+        intents=(DownloadIntent(label="CMIP7", n_files=0, n_bytes=0, n_unsized=0),),
     )
 
     file_regression.check(rendered, extension=".txt")

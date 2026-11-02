@@ -74,6 +74,106 @@ class Endpoint:
 
 
 @dataclass(frozen=True)
+class TrackedRequirement:
+    """
+    One question, the endpoints we ask it of, and what to do with the answer
+
+    The unit this repository is organised around. Adding a second question is adding
+    one of these to a list, rather than finding every dict keyed by project and
+    teaching it about a new key.
+
+    A question is per *project*, not per phase of CMIP: "the pattern effect in CMIP7"
+    and "the pattern effect in CMIP6" are two of these, because their queries differ
+    (`processing_id` is `tavg-h2m-hxy-u` for one and `Amon` for the other) and because
+    we want one of them downloaded and the other only watched.
+    """
+
+    label: str
+    """
+    What to call this in a report, e.g. `'CMIP7 pattern effect'`
+
+    Report-only, and therefore **free to change**. Nothing is stored under it.
+    """
+
+    stem: str
+    """
+    What this search is called in the database, before the project and endpoint
+
+    One stored requirement per endpoint is filed as `<stem>-<project>-<tag>`, so this
+    is the key an endpoint's whole history hangs off. **Changing it starts that
+    history again from scratch**, and esmporium refuses to let a search change
+    meaning without changing name, so editing [query][(c).query] without changing
+    this (or bumping the database version) is refused rather than silently comparing
+    apples with oranges.
+
+    Two requirements may share a stem -- ours do -- because the project is appended.
+    That is what keeps "the same question, asked of two projects" readable in the
+    database.
+    """
+
+    role_stem: str
+    """
+    What the leaf's role is called, before the endpoint tag is appended
+
+    Part of the stored requirement's fingerprint, so it is as load-bearing as
+    [stem][(c).stem] and must not be changed casually. See this module's docstring
+    for why the endpoint tag rides in the role at all.
+    """
+
+    query: QueryProtocol
+    """The question itself. Must name the same project its endpoints do."""
+
+    endpoints: tuple[Endpoint, ...]
+    """Every endpoint to ask it of, in the order the report should show them"""
+
+    download: bool = False
+    """
+    Whether to fetch the bytes for what this finds
+
+    Searching and downloading are not the same appetite: we watch CMIP6 across seven
+    endpoints to see what exists, and have no intention of pulling all of it onto
+    this disk.
+    """
+
+    detailed: bool = False
+    """
+    Whether this gets a full changes table, one block per endpoint
+
+    `False` gets a single row per endpoint instead: how much it returned, and whether
+    that differs from its own previous run.
+    """
+
+    def __post_init__(self) -> None:
+        """
+        Check the endpoints and the query agree about the project
+
+        Raises
+        ------
+        ValueError
+            An endpoint names a project the query does not ask about
+
+            Cheap to check and miserable to debug: the search would be built from
+            this query, sent to a facade chosen for that project, and the mismatch
+            would surface as an endpoint which answers nothing for no stated reason.
+        """
+        asked = tuple(self.query.project)
+        wrong = sorted(
+            {
+                endpoint.project
+                for endpoint in self.endpoints
+                if endpoint.project not in asked
+            }
+        )
+        if wrong:
+            msg = (
+                f"{self.label!r} asks about {list(asked)} but has endpoints for "
+                f"{wrong}. An endpoint is paired with a project in esmporium's "
+                "facade store, so these have to agree."
+            )
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True)
 class EndpointResult:
     """
     What came of asking one endpoint, whether or not it answered
@@ -157,6 +257,38 @@ def endpoint_requirement(
         # to a bare role silently merges every endpoint's history into one.
         tree=leaf(query, f"{role_stem}-{endpoint.tag}"),
         group_by=tuple(group_by),
+    )
+
+
+def requirement_for(tracked: TrackedRequirement, endpoint: Endpoint) -> Requirement:
+    """
+    Build the requirement which asks `endpoint` about `tracked`
+
+    The pairing [endpoint_requirement][(m).] does, with the stems read off the
+    tracked requirement instead of being passed by hand -- so a caller cannot ask
+    one endpoint under one stem and its neighbour under another, which would split
+    one search's history in two without saying so.
+
+    Parameters
+    ----------
+    tracked
+        The question, and the names its history is stored under
+
+    endpoint
+        The endpoint to ask. Must be one of `tracked.endpoints`; this is not checked,
+        because asking a requirement about an endpoint it does not list is a
+        reasonable thing to do by hand when debugging.
+
+    Returns
+    -------
+    :
+        The requirement, named and roled so that one endpoint's history is its own
+    """
+    return endpoint_requirement(
+        endpoint,
+        tracked.query,
+        name_stem=tracked.stem,
+        role_stem=tracked.role_stem,
     )
 
 

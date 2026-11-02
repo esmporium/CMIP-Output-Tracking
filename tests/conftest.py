@@ -15,17 +15,34 @@ you are writing belongs upstream rather than here.
 import datetime
 import typing
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 import pytest
+from esmporium.datasets import AccessService, ContainerFormat, DownloadOutcome
 from esmporium.db import (
     ChangeRecord,
+    DownloadSummary,
     RunHealth,
     SearchRunLeafInfo,
     SearchSummary,
     VersionRecord,
 )
+from esmporium.downloads import (
+    DataNodeFetchError,
+    DownloadRequest,
+    DownloadResult,
+    FetchOutcome,
+    FileTarget,
+    Route,
+    RouteFailure,
+    RunTotals,
+    esmporium_layout,
+)
 
+from local.download_formatting import DownloadGroup
+from local.downloads import DownloadRecord
 from local.endpoints import Endpoint, EndpointResult
+from local.summary_formatting import ReportGroup
 
 REALISTIC_FACETS: dict[str, str] = {
     "project": "CMIP7",
@@ -67,6 +84,9 @@ class SummaryScenes:
 
     result: typing.Callable[..., EndpointResult]
     """Build one endpoint's result, answered or failed"""
+
+    groups: typing.Callable[..., tuple[ReportGroup, ...]]
+    """Group results the way the driver does, so a test can pass a flat list"""
 
 
 @pytest.fixture
@@ -245,6 +265,26 @@ def summary_scenes():
             failure=None,
         )
 
+    def groups(results, *, detailed=()):
+        """
+        Group results for the renderer, keyed by project
+
+        The driver groups by tracked requirement, and its two requirements happen to
+        be labelled by project, so grouping on `endpoint.project` here produces
+        exactly what it produces. This exists so that a test can go on reading as a
+        flat list of endpoints rather than as a list of groups of endpoints.
+        """
+        by_label: dict[str, list[EndpointResult]] = {}
+        for result in results:
+            by_label.setdefault(result.endpoint.project, []).append(result)
+
+        return tuple(
+            ReportGroup(
+                label=label, detailed=label in detailed, results=tuple(of_label)
+            )
+            for label, of_label in by_label.items()
+        )
+
     return SummaryScenes(
         version=version,
         change=change,
@@ -253,4 +293,326 @@ def summary_scenes():
         summary=summary,
         endpoint=endpoint,
         result=result,
+        groups=groups,
+    )
+
+
+DOWNLOAD_ROOT = PurePosixPath("/data/cmip")
+"""
+Where the download scenes pretend to write
+
+An absolute path, because a report prints it and a reader is meant to see which disk
+is being filled. Nothing is ever written there: every download scene is built by
+hand, the same way the summary scenes are.
+
+A `PurePosixPath` rather than a `Path`, so that the checked-in copies of the email
+render identically whoever runs the tests. A `Path` would come out with backslashes
+on Windows and the regression files would fail for the platform rather than for the
+layout.
+"""
+
+
+@dataclass(frozen=True)
+class DownloadScenes:
+    """The vocabulary the `download_scenes` fixture hands a test"""
+
+    route: typing.Callable[..., Route]
+    """Build one route to one file's bytes"""
+
+    fetched: typing.Callable[..., DownloadRecord]
+    """Build a record of a file which arrived"""
+
+    failed: typing.Callable[..., DownloadRecord]
+    """Build a record of a file which did not"""
+
+    skipped: typing.Callable[..., DownloadRecord]
+    """Build a record of a file which was already on disk"""
+
+    totals: typing.Callable[..., RunTotals]
+    """Build what a run added up to"""
+
+    held: typing.Callable[..., DownloadSummary]
+    """Build what the database holds overall"""
+
+    group: typing.Callable[..., DownloadGroup]
+    """Build one tracked requirement's download run"""
+
+    root: PurePosixPath
+    """Where the scenes pretend to write"""
+
+
+@pytest.fixture
+def download_scenes():
+    """
+    Get builders for the pieces of a download run
+
+    The download twin of `summary_scenes`, and for the same reason: a report is a
+    pure function of these objects, so a test can build the morning it wants to see
+    without a network, a disk or a database.
+    """
+
+    def route(data_node="esgf.ceda.ac.uk", *, url=None, service=AccessService.HTTPS):
+        """Build one route, with a plausible URL for `data_node`."""
+        return Route(
+            url=url if url is not None else f"https://{data_node}/thredds/tas.nc",
+            data_node=data_node,
+            service=service,
+            container_format=ContainerFormat.NETCDF,
+            data_access_id=1,
+        )
+
+    def _request(  # noqa: PLR0913 - one argument per thing a scene varies
+        filename, *, size, file_id, model, variant_label, version, grid_label
+    ):
+        """Build the request half of a result, including where it would land."""
+        relative = esmporium_layout(
+            FileTarget(
+                id_project_specific=(
+                    f"MIP-DRS7.CMIP7.CMIP.UKNCSP.{model}.historical."
+                    f"{variant_label}.glb.mon.tas.tavg-h2m-hxy-u.{grid_label}"
+                ),
+                version=version,
+                filename=filename,
+            )
+        )
+
+        return DownloadRequest(
+            routes=(route(),),
+            dest=DOWNLOAD_ROOT / relative,
+            file_id=file_id,
+            expected_size=size,
+            checksum="e311b6e532776cdb",
+            checksum_type="SHA256",
+        )
+
+    def _record(  # noqa: PLR0913 - one argument per thing a scene varies
+        result, *, model, variant_label, version, filename, grid_label
+    ):
+        """Pair a result with the identity a report shows it under."""
+        return DownloadRecord(
+            result=result,
+            facets={
+                "model": model,
+                "variant_label": variant_label,
+                "grid_label": grid_label,
+            },
+            version=version,
+            filename=filename,
+        )
+
+    def fetched(  # noqa: PLR0913 - one argument per thing a scene varies
+        filename="tas_mon_UKESM1-3-LL_historical_r1i1p1f2_185001-194912.nc",
+        *,
+        size=65345526,
+        file_id=1,
+        model="UKESM1-3-LL",
+        variant_label="r1i1p1f2",
+        version="20261020",
+        grid_label="g110",
+        served_by="esgf.ceda.ac.uk",
+        after_failures=(),
+    ):
+        """
+        Build a record of a file which arrived
+
+        Pass `after_failures` to say it only arrived from a later mirror, which is
+        the thing the report's `after` column exists to show.
+        """
+        request = _request(
+            filename,
+            size=size,
+            file_id=file_id,
+            model=model,
+            variant_label=variant_label,
+            version=version,
+            grid_label=grid_label,
+        )
+        result = DownloadResult(
+            request=request,
+            fetch=FetchOutcome(
+                path=request.dest,
+                bytes_written=size,
+                size_on_disk=size,
+                checksum_verified=True,
+                checksum_type_used="SHA256",
+                resumed=False,
+                route=route(served_by),
+            ),
+            failures=tuple(
+                RouteFailure(
+                    route=route(node),
+                    outcome=DownloadOutcome.HOST_FAULT,
+                    error=DataNodeFetchError(
+                        f"https://{node}/thredds/tas.nc", "500 from the node"
+                    ),
+                )
+                for node in after_failures
+            ),
+        )
+
+        return _record(
+            result,
+            model=model,
+            variant_label=variant_label,
+            version=version,
+            filename=filename,
+            grid_label=grid_label,
+        )
+
+    def failed(  # noqa: PLR0913 - one argument per thing a scene varies
+        filename="tas_mon_UKCM2-0-LL_historical_r1i1p1f1_185001-194912.nc",
+        *,
+        size=48000000,
+        file_id=9,
+        model="UKCM2-0-LL",
+        variant_label="r1i1p1f1",
+        version="20260909",
+        grid_label="g110",
+        tried=("esgf.ceda.ac.uk", "esgf.nci.org.au"),
+        outcome=DownloadOutcome.HOST_FAULT,
+    ):
+        """
+        Build a record of a file which did not arrive
+
+        `tried` empty is the case where the selector offered no route at all, which
+        reads differently from every route having been tried and failed.
+        """
+        result = DownloadResult(
+            request=_request(
+                filename,
+                size=size,
+                file_id=file_id,
+                model=model,
+                variant_label=variant_label,
+                version=version,
+                grid_label=grid_label,
+            ),
+            fetch=None,
+            failures=tuple(
+                RouteFailure(
+                    route=route(node),
+                    outcome=outcome,
+                    error=DataNodeFetchError(
+                        f"https://{node}/thredds/tas.nc", str(outcome)
+                    ),
+                )
+                for node in tried
+            ),
+        )
+
+        return _record(
+            result,
+            model=model,
+            variant_label=variant_label,
+            version=version,
+            filename=filename,
+            grid_label=grid_label,
+        )
+
+    def skipped(  # noqa: PLR0913 - one argument per thing a scene varies
+        filename="tas_mon_CanESM6-0-MR_historical_r1i1p1f1_185001-202112.nc",
+        *,
+        size=51000000,
+        file_id=20,
+        model="CanESM6-0-MR",
+        variant_label="r1i1p1f1",
+        version="20260629",
+        grid_label="g150",
+    ):
+        """Build a record of a file which was already on disk."""
+        result = DownloadResult(
+            request=_request(
+                filename,
+                size=size,
+                file_id=file_id,
+                model=model,
+                variant_label=variant_label,
+                version=version,
+                grid_label=grid_label,
+            ),
+            fetch=None,
+            skipped=True,
+        )
+
+        return _record(
+            result,
+            model=model,
+            variant_label=variant_label,
+            version=version,
+            filename=filename,
+            grid_label=grid_label,
+        )
+
+    def totals(  # noqa: PLR0913 - one argument per field a scene fills in
+        *,
+        n_files=0,
+        n_fetched=0,
+        n_skipped=0,
+        n_failed=0,
+        n_given_up=0,
+        bytes_fetched=0,
+    ):
+        """Build what a run added up to."""
+        return RunTotals(
+            n_files=n_files,
+            n_fetched=n_fetched,
+            n_skipped=n_skipped,
+            n_failed=n_failed,
+            n_given_up=n_given_up,
+            bytes_fetched=bytes_fetched,
+        )
+
+    def held(*, done=0, queued=0, failed=0, given_up=0, bytes_done=0):
+        """Build what the database holds overall, keyed as the statuses are stored."""
+        counts = {
+            "done": done,
+            "queued": queued,
+            "failed": failed,
+            "given_up": given_up,
+        }
+
+        return DownloadSummary(
+            n_by_status={status: count for status, count in counts.items() if count},
+            bytes_by_status={"done": bytes_done} if bytes_done else {},
+        )
+
+    def group(records=(), *, label="CMIP7", **total_kwargs):
+        """
+        Build one requirement's download run
+
+        The totals default to being worked out from `records`, so a test which only
+        cares about the tables does not have to keep a tally in step by hand. Pass
+        any total by name to say something the records do not, e.g. `n_given_up`.
+        """
+        fetched = [
+            record
+            for record in records
+            if record.result.fetch is not None and not record.result.skipped
+        ]
+        counted = {
+            "n_files": len(records),
+            "n_fetched": len(fetched),
+            "n_skipped": sum(1 for record in records if record.result.skipped),
+            "n_failed": sum(1 for record in records if not record.result.succeeded),
+            "bytes_fetched": sum(
+                record.result.fetch.size_on_disk
+                for record in fetched
+                if record.result.fetch is not None
+            ),
+            **total_kwargs,
+        }
+
+        return DownloadGroup(
+            label=label, records=tuple(records), totals=totals(**counted)
+        )
+
+    return DownloadScenes(
+        route=route,
+        fetched=fetched,
+        failed=failed,
+        skipped=skipped,
+        totals=totals,
+        held=held,
+        group=group,
+        root=DOWNLOAD_ROOT,
     )

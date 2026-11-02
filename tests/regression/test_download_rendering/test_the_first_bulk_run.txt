@@ -1,0 +1,20 @@
+Subject: pattern-effect downloads: 8 fetched, 498.5 MB
+
+CMIP7 this run
+  8 file(s): 8 fetched, 0 already here, 0 failed
+  498.5 MB moved into /data/cmip
+
+Fetched (8)
+  model          variant   grid  version   file                                                                                   size  from             after
+  ACCESS-ESM1-6  r1i1p1f1  g115  20261008  tas_tavg-h2m-hxy-u_mon_glb_g115_ACCESS-ESM1-6_historical_r1i1p1f1_185001-194912.nc  62.3 MB  esgf.ceda.ac.uk  -
+  ACCESS-ESM1-6  r1i1p1f1  g115  20261008  tas_tavg-h2m-hxy-u_mon_glb_g115_ACCESS-ESM1-6_historical_r1i1p1f1_195001-202112.nc  62.3 MB  esgf.ceda.ac.uk  -
+  CanESM6-0-MR   r1i1p1f1  g150  20260629  tas_tavg-h2m-hxy-u_mon_glb_g150_CanESM6-0-MR_historical_r1i1p1f1_185001-194912.nc   62.3 MB  esgf.ceda.ac.uk  -
+  CanESM6-0-MR   r1i1p1f1  g150  20260629  tas_tavg-h2m-hxy-u_mon_glb_g150_CanESM6-0-MR_historical_r1i1p1f1_195001-202112.nc   62.3 MB  esgf.ceda.ac.uk  -
+  UKCM2-0-LL     r1i1p1f1  g110  20260909  tas_tavg-h2m-hxy-u_mon_glb_g110_UKCM2-0-LL_historical_r1i1p1f1_185001-194912.nc     62.3 MB  esgf.ceda.ac.uk  -
+  UKCM2-0-LL     r1i1p1f1  g110  20260909  tas_tavg-h2m-hxy-u_mon_glb_g110_UKCM2-0-LL_historical_r1i1p1f1_195001-202112.nc     62.3 MB  esgf.ceda.ac.uk  -
+  UKESM1-3-LL    r1i1p1f1  g110  20261020  tas_tavg-h2m-hxy-u_mon_glb_g110_UKESM1-3-LL_historical_r1i1p1f1_185001-194912.nc    62.3 MB  esgf.ceda.ac.uk  -
+  UKESM1-3-LL    r1i1p1f1  g110  20261020  tas_tavg-h2m-hxy-u_mon_glb_g110_UKESM1-3-LL_historical_r1i1p1f1_195001-202112.nc    62.3 MB  esgf.ceda.ac.uk  -
+
+In the database
+  8 file(s) (8 done)
+  nothing outstanding

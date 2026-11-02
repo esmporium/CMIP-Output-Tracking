@@ -2,6 +2,10 @@
 #
 # Wrapper that makes the daily job safe to run from cron.
 #
+# One job, one entry: it searches, emails what changed, then downloads what is
+# new and emails that. The order is in the script, not in this crontab, so there
+# is nothing to keep in step here.
+#
 # cron is not a login shell: it starts with a near-empty PATH, no profile, and no
 # working directory to speak of. Everything this script does is about putting that
 # back, so that the job behaves the same whether you ran it or cron did.
@@ -18,7 +22,9 @@
 # the README for the table.
 #
 # MAILTO is worth setting: cron mails whatever the job prints to stderr, which is
-# the only notification left if the job dies before it can send its own.
+# the only notification left if the job dies before it can send its own -- and it
+# is also how you hear about a search report that could not be emailed, since that
+# is logged and stepped over rather than being allowed to cost you the download.
 
 set -euo pipefail
 
@@ -52,7 +58,7 @@ LOG_FILE="$LOG_DIR/search-and-notifications-$(date +%Y-%m).log"
     echo "=== $(date --iso-8601=seconds 2> /dev/null || date +%Y-%m-%dT%H:%M:%S%z) starting ==="
     # The job's own output goes to the log; a non-zero exit is re-raised below so
     # that cron (and MAILTO) still hear about a failure.
-    make run-search-and-notifications
+    make run-daily
     echo "=== finished ok ==="
 } >> "$LOG_FILE" 2>&1 || {
     status=$?

@@ -13,7 +13,9 @@ from esmporium.query import Query
 from local.endpoints import (
     Endpoint,
     EndpointResult,
+    TrackedRequirement,
     endpoint_requirement,
+    requirement_for,
     search_endpoint,
     single_facade_selector,
 )
@@ -143,3 +145,109 @@ def test_n_datasets_counts_datasets_not_versions(summary_scenes):
 
     assert len(result.summary.current) == 3
     assert result.n_datasets == 2
+
+
+def test_a_tracked_requirement_stores_under_the_name_it_always_did():
+    # The load-bearing test in this file. The stored requirement name is the key an
+    # endpoint's whole search history hangs off, so if `requirement_for` ever
+    # produced a different string, every endpoint would silently start again from
+    # scratch and the first morning's email would report the entire archive as new.
+    # These names are what is in the database today; they are not free to change.
+    tracked = TrackedRequirement(
+        label="CMIP7",
+        stem="pattern-effect-tas-mon-historical",
+        role_stem="tas",
+        query=Query(
+            project=("CMIP7",),
+            variable=("tas",),
+            experiment=("historical",),
+            reporting_interval=("mon",),
+            processing_id=("tavg-h2m-hxy-u",),
+        ),
+        endpoints=(
+            Endpoint("CMIP7", "search.east.esgf.io", "east"),
+            Endpoint("CMIP7", "search.west.esgf.io", "west"),
+        ),
+    )
+
+    names = [requirement_for(tracked, endpoint).name for endpoint in tracked.endpoints]
+
+    assert names == [
+        "pattern-effect-tas-mon-historical-cmip7-east",
+        "pattern-effect-tas-mon-historical-cmip7-west",
+    ]
+
+
+def test_two_requirements_sharing_a_stem_still_store_apart():
+    # Ours do share one: "the pattern effect" asked of CMIP7 and of CMIP6 is one
+    # question, and the project is what the database files them apart by. If it did
+    # not, the two would collide on `requirement_hash` and esmporium would refuse
+    # the second one.
+    shared = dict(stem="pattern-effect", role_stem="tas")
+    cmip7 = TrackedRequirement(
+        label="CMIP7",
+        query=Query(project=("CMIP7",), variable=("tas",)),
+        endpoints=(Endpoint("CMIP7", "search.east.esgf.io", "east"),),
+        **shared,
+    )
+    cmip6 = TrackedRequirement(
+        label="CMIP6",
+        query=Query(project=("CMIP6",), variable=("tas",)),
+        endpoints=(Endpoint("CMIP6", "esgf.ceda.ac.uk", "ceda"),),
+        **shared,
+    )
+
+    first = requirement_for(cmip7, cmip7.endpoints[0])
+    second = requirement_for(cmip6, cmip6.endpoints[0])
+
+    assert first.name != second.name
+    assert first.requirement_hash() != second.requirement_hash()
+
+
+def test_an_endpoint_for_the_wrong_project_is_refused():
+    # Cheap to check and miserable to debug: the facade store pairs a host with a
+    # project, so a CMIP6 endpoint on a CMIP7 question would surface as an endpoint
+    # that answers nothing, for no stated reason.
+    with pytest.raises(ValueError, match="CMIP6"):
+        TrackedRequirement(
+            label="muddled",
+            stem="pattern-effect",
+            role_stem="tas",
+            query=Query(project=("CMIP7",), variable=("tas",)),
+            endpoints=(
+                Endpoint("CMIP7", "search.east.esgf.io", "east"),
+                Endpoint("CMIP6", "esgf.ceda.ac.uk", "ceda"),
+            ),
+        )
+
+
+def test_a_requirement_spanning_two_projects_is_allowed():
+    # Not something we do, but the check is about agreement, not about there being
+    # exactly one project: a query naming both is entitled to endpoints for both.
+    spanning = TrackedRequirement(
+        label="both",
+        stem="pattern-effect",
+        role_stem="tas",
+        query=Query(project=("CMIP6", "CMIP7"), variable=("tas",)),
+        endpoints=(
+            Endpoint("CMIP7", "search.east.esgf.io", "east"),
+            Endpoint("CMIP6", "esgf.ceda.ac.uk", "ceda"),
+        ),
+    )
+
+    assert len(spanning.endpoints) == 2
+
+
+def test_only_requirements_asking_to_be_downloaded_say_so():
+    watched = TrackedRequirement(
+        label="CMIP6",
+        stem="pattern-effect",
+        role_stem="tas",
+        query=Query(project=("CMIP6",), variable=("tas",)),
+        endpoints=(Endpoint("CMIP6", "esgf.ceda.ac.uk", "ceda"),),
+    )
+
+    # Defaults matter here: a new requirement must not start downloading by
+    # accident, and must not take a block of the report it did not ask for.
+    assert not watched.download
+    assert not watched.detailed

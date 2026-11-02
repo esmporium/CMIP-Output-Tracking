@@ -39,7 +39,7 @@ dev = [
 package = true
 
 [tool.uv.sources]
-esmporium = { git = "https://github.com/esmporium/esmporium.git", rev = "a296d9c05b6e8967c7d1dd2f1527a2387cd8e65c" }
+esmporium = { git = "https://github.com/esmporium/esmporium.git", rev = "4b7cb238f3fe78c994360c39134df098054d7b68" }
 
 [tool.pytest.ini_options]
 addopts = [

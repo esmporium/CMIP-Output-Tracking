@@ -1,0 +1,220 @@
+"""
+Regression tests on what the download email looks like
+
+The checked-in files beside this one are copies of the mail itself, so a change to
+the layout arrives as a diff you have to read rather than as a surprise in somebody's
+inbox. `make accept-layout` rewrites them; read `git diff` before committing.
+"""
+
+from __future__ import annotations
+
+import pytest
+from esmporium.datasets import DownloadOutcome
+
+from local.download_formatting import download_subject, format_download_report
+from local.downloads import IDENTITY_FACETS
+
+CMIP7_MODELS = (
+    ("ACCESS-ESM1-6", "g115", "20261008"),
+    ("CanESM6-0-MR", "g150", "20260629"),
+    ("UKCM2-0-LL", "g110", "20260909"),
+    ("UKESM1-3-LL", "g110", "20261020"),
+)
+"""
+Real CMIP7 models, grids and version stamps the pattern-effect search returns
+
+Real values rather than `model-1`, for the same reason the search fixtures use them:
+a checked-in copy of an email full of placeholders is one nobody can review by eye,
+which is the only thing it is for.
+"""
+
+TYPICAL_FILE_BYTES = 65345526
+"""
+How large one of these files really is, measured 2026-11-02
+
+Monthly `tas` for a century on a native grid. Worth being a real number: it is what
+makes `21.2 GB` in a report read as a plausible total rather than an invented one.
+"""
+
+
+def report(groups, held, *, root, max_rows=50):
+    """Render a report the way the job does, so the fixture is what gets mailed."""
+    rendered = format_download_report(
+        groups,
+        held,
+        root=root,
+        facets=IDENTITY_FACETS,
+        max_rows=max_rows,
+    )
+    # The subject is half of what anybody reads, so a checked-in copy of the mail
+    # which leaves it out is a copy of the wrong thing.
+    subject = download_subject(groups, stem="pattern-effect")
+
+    return f"Subject: {subject}\n\n{rendered}"
+
+
+@pytest.fixture
+def first_run(download_scenes):
+    """
+    Get the bulk run: everything the search has found, arriving at once
+
+    The morning this is set up, and the only one on which the totals are large. Two
+    files per dataset version, because that is how CMIP7 publishes a historical
+    monthly series -- split at 1950.
+    """
+    records = []
+    file_id = 1
+    for model, grid, version in CMIP7_MODELS:
+        for span in ("185001-194912", "195001-202112"):
+            records.append(
+                download_scenes.fetched(
+                    f"tas_tavg-h2m-hxy-u_mon_glb_{grid}_{model}"
+                    f"_historical_r1i1p1f1_{span}.nc",
+                    size=TYPICAL_FILE_BYTES,
+                    file_id=file_id,
+                    model=model,
+                    variant_label="r1i1p1f1",
+                    version=version,
+                    grid_label=grid,
+                )
+            )
+            file_id += 1
+
+    return tuple(records)
+
+
+def test_the_first_bulk_run(file_regression, download_scenes, first_run):
+    """
+    The morning the download job is switched on
+
+    Everything the search has found arrives at once, and the database holds exactly
+    what this run put there, because there was nothing before it.
+
+    In miniature: the real first run is 325 files and 21.2 GB. Four models here
+    rather than seven, and one variant each rather than twenty-five, because a
+    checked-in copy of the email is for reading and a 325-row table is not.
+    """
+    rendered = report(
+        [download_scenes.group(first_run)],
+        download_scenes.held(
+            done=len(first_run), bytes_done=len(first_run) * TYPICAL_FILE_BYTES
+        ),
+        root=download_scenes.root,
+    )
+
+    file_regression.check(rendered, extension=".txt")
+
+
+def test_a_quiet_morning(file_regression, download_scenes):
+    """
+    What almost every morning looks like
+
+    Nothing new has been published, so there is nothing to fetch. The job says so in
+    a sentence, because an empty report and a broken job otherwise look identical.
+
+    Note that this report is rendered but, by default, not mailed:
+    `EMAIL_WHEN_NOTHING_DOWNLOADED` is off, and the search job's own morning mail is
+    what covers the job having run at all.
+    """
+    rendered = report(
+        [download_scenes.group()],
+        download_scenes.held(done=325, bytes_done=325 * TYPICAL_FILE_BYTES),
+        root=download_scenes.root,
+    )
+
+    file_regression.check(rendered, extension=".txt")
+
+
+def test_a_new_variant_appears(file_regression, download_scenes):
+    """
+    The morning this was all built for
+
+    A model has published another variant since yesterday, so its files arrive on
+    their own. This is what the automation is for: nobody asked for these, the search
+    found them and the download followed.
+    """
+    arrived = tuple(
+        download_scenes.fetched(
+            f"tas_tavg-h2m-hxy-u_mon_glb_g150_CanESM6-0-MR"
+            f"_historical_r26i1p1f1_{span}.nc",
+            size=TYPICAL_FILE_BYTES,
+            file_id=400 + n,
+            model="CanESM6-0-MR",
+            variant_label="r26i1p1f1",
+            version="20260629",
+            grid_label="g150",
+        )
+        for n, span in enumerate(("185001-194912", "195001-202112"))
+    )
+    rendered = report(
+        [download_scenes.group(arrived)],
+        download_scenes.held(done=327, bytes_done=327 * TYPICAL_FILE_BYTES),
+        root=download_scenes.root,
+    )
+
+    file_regression.check(rendered, extension=".txt")
+
+
+def test_a_morning_with_trouble(file_regression, download_scenes):
+    """
+    A mirror was down, a node wants credentials, and a file has gone
+
+    Three failures which read very differently and must not be flattened into one
+    "failed" count: one arrived from a later mirror and is fine, one needs somebody
+    to find a certificate, and one is simply not there any more. The second and third
+    are `given up` -- waiting will not fix either.
+    """
+    records = (
+        download_scenes.fetched(
+            "tas_tavg-h2m-hxy-u_mon_glb_g110_UKESM1-3-LL"
+            "_historical_r1i1p1f2_185001-194912.nc",
+            size=TYPICAL_FILE_BYTES,
+            after_failures=("esgf.nci.org.au",),
+        ),
+        download_scenes.failed(
+            "tas_tavg-h2m-hxy-u_mon_glb_g137_UKCM2a-0-HH"
+            "_historical_r1i1p1f1_185001-194912.nc",
+            file_id=51,
+            model="UKCM2a-0-HH",
+            version="20260826",
+            grid_label="g137",
+            outcome=DownloadOutcome.NEEDS_CREDENTIALS,
+            tried=("esgf.ceda.ac.uk",),
+        ),
+        download_scenes.failed(
+            "tas_tavg-h2m-hxy-u_mon_glb_g134_CAS-ESM2-1-CSM"
+            "_historical_r1i1p1f1_185001-194912.nc",
+            file_id=52,
+            model="CAS-ESM2-1-CSM",
+            version="20260927",
+            grid_label="g134",
+            outcome=DownloadOutcome.MISSING,
+            tried=("esgf.ceda.ac.uk", "esgf.nci.org.au"),
+        ),
+        download_scenes.skipped(),
+    )
+    rendered = report(
+        [download_scenes.group(records, n_given_up=2)],
+        download_scenes.held(done=323, given_up=2, bytes_done=323 * TYPICAL_FILE_BYTES),
+        root=download_scenes.root,
+    )
+
+    file_regression.check(rendered, extension=".txt")
+
+
+def test_more_rows_than_anyone_can_read(file_regression, download_scenes, first_run):
+    """
+    A bulk run under a small cap
+
+    The rest has to be folded away rather than mailed in full, and the count of what
+    was folded away has to survive -- otherwise a capped table reads as the whole of
+    what happened.
+    """
+    rendered = report(
+        [download_scenes.group(first_run)],
+        download_scenes.held(done=len(first_run)),
+        root=download_scenes.root,
+        max_rows=3,
+    )
+
+    file_regression.check(rendered, extension=".txt")

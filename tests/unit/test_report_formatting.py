@@ -204,12 +204,14 @@ def test_dropping_the_dataset_listing_keeps_its_count(summary_scenes):
 
 def test_a_project_not_asked_for_detail_gets_one_row_each(summary_scenes):
     rendered = format_report(
-        [
-            summary_scenes.result("east", project="CMIP7"),
-            summary_scenes.result("west", project="CMIP7"),
-            summary_scenes.result("nci", project="CMIP6"),
-        ],
-        detailed=("CMIP7",),
+        summary_scenes.groups(
+            [
+                summary_scenes.result("east", project="CMIP7"),
+                summary_scenes.result("west", project="CMIP7"),
+                summary_scenes.result("nci", project="CMIP6"),
+            ],
+            detailed=("CMIP7",),
+        )
     )
 
     # CMIP7 got blocks, so its run health is in there; CMIP6 got a row.
@@ -220,8 +222,10 @@ def test_a_project_not_asked_for_detail_gets_one_row_each(summary_scenes):
 
 def test_the_report_ends_in_exactly_one_newline(summary_scenes):
     rendered = format_report(
-        [summary_scenes.result("east"), summary_scenes.result("west")],
-        detailed=("CMIP7",),
+        summary_scenes.groups(
+            [summary_scenes.result("east"), summary_scenes.result("west")],
+            detailed=("CMIP7",),
+        )
     )
 
     assert rendered.endswith("\n")
@@ -232,12 +236,14 @@ def test_no_line_of_the_report_has_trailing_whitespace(summary_scenes):
     # Our own pre-commit would strip it from a checked-in regression file, and the
     # test comparing the two would then fail for no reason.
     rendered = format_report(
-        [
-            summary_scenes.result("east", changes=(summary_scenes.change(ADDED),)),
-            summary_scenes.result("west", failure="read timeout"),
-            summary_scenes.result("nci", project="CMIP6"),
-        ],
-        detailed=("CMIP7",),
+        summary_scenes.groups(
+            [
+                summary_scenes.result("east", changes=(summary_scenes.change(ADDED),)),
+                summary_scenes.result("west", failure="read timeout"),
+                summary_scenes.result("nci", project="CMIP6"),
+            ],
+            detailed=("CMIP7",),
+        )
     )
 
     assert all(line == line.rstrip() for line in rendered.splitlines())
@@ -245,11 +251,13 @@ def test_no_line_of_the_report_has_trailing_whitespace(summary_scenes):
 
 def test_the_subject_says_how_many_endpoints_moved(summary_scenes):
     subject = report_subject(
-        [
-            summary_scenes.result("east", changes=(summary_scenes.change(ADDED),)),
-            summary_scenes.result("west"),
-            summary_scenes.result("nci", project="CMIP6"),
-        ],
+        summary_scenes.groups(
+            [
+                summary_scenes.result("east", changes=(summary_scenes.change(ADDED),)),
+                summary_scenes.result("west"),
+                summary_scenes.result("nci", project="CMIP6"),
+            ]
+        ),
         stem="pattern-effect",
     )
 
@@ -259,10 +267,12 @@ def test_the_subject_says_how_many_endpoints_moved(summary_scenes):
 def test_the_subject_leads_with_a_failure(summary_scenes):
     # A subject line's job is deciding whether to open the mail.
     subject = report_subject(
-        [
-            summary_scenes.result("east"),
-            summary_scenes.result("west", failure="read timeout"),
-        ],
+        summary_scenes.groups(
+            [
+                summary_scenes.result("east"),
+                summary_scenes.result("west", failure="read timeout"),
+            ]
+        ),
         stem="pattern-effect",
     )
 

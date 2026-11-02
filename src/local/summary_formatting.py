@@ -4,6 +4,7 @@ Rendering an esmporium `SearchSummary` as text
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from esmporium.datasets import DATASET_FACET_COLUMNS
@@ -897,15 +898,38 @@ thing, so only a pair gets compared.
 """
 
 
-def _projects_in_order(results: Sequence[EndpointResult]) -> tuple[str, ...]:
-    """Get the projects these results cover, in the order they first appear."""
-    return tuple(dict.fromkeys(result.endpoint.project for result in results))
+@dataclass(frozen=True)
+class ReportGroup:
+    """
+    One tracked requirement's results, ready to render
+
+    The renderer used to work out its own grouping, by reading `project` off each
+    result. That only ever worked because there was one question per project; a
+    second CMIP7 question would have been folded into the first and reported as one.
+    So the grouping is the caller's to decide and this is how it says so.
+
+    Built from a `local.endpoints.TrackedRequirement` by whoever ran the searches.
+    Deliberately *not* that type: a renderer which imported the configuration would
+    be a renderer that could not be tested without it.
+    """
+
+    label: str
+    """What to call this group, e.g. `'CMIP7'`"""
+
+    detailed: bool
+    """
+    Whether to give it a full changes table, one block per endpoint
+
+    `False` gets a single [format_endpoint_overview][(m).] row per endpoint instead.
+    """
+
+    results: tuple[EndpointResult, ...]
+    """What each of its endpoints said, in the order to show them"""
 
 
 def format_report(
-    results: Sequence[EndpointResult],
+    groups: Sequence[ReportGroup],
     *,
-    detailed: Sequence[str] = (),
     max_rows: int = 20,
     facets: Sequence[str] | None = None,
     show_current_table: bool = False,
@@ -915,19 +939,14 @@ def format_report(
 
     Parameters
     ----------
-    results
-        What each endpoint said. Grouped by project in the order the projects first
-        appear, so the order of this sequence is the order of the report.
+    groups
+        One [ReportGroup][(m).] per tracked requirement, in the order to show them.
 
-    detailed
-        The projects to give a full changes table to, one block per endpoint, plus a
-        comparison when the project has exactly two. Every other project gets one
-        [format_endpoint_overview][(m).] table instead.
-
-        This is the knob to reach for when a new search wants more or less than the
-        others: it is a caller's choice, so a search which needs a table and a search
-        which needs a line can live in the same report without either one teaching
-        this module about itself.
+        Each group says whether it wants a full changes table, one block per
+        endpoint, plus a comparison when it has exactly two endpoints -- or a single
+        [format_endpoint_overview][(m).] table instead. That is a caller's choice, so
+        a search which needs a table and a search which needs a line can live in the
+        same report without either one teaching this module about itself.
 
     max_rows
         How many rows of each table to show before summarising the rest
@@ -948,33 +967,31 @@ def format_report(
     """
     blocks: list[list[str]] = []
 
-    for project in _projects_in_order(results):
-        of_project = [
-            result for result in results if result.endpoint.project == project
-        ]
+    for group in groups:
+        of_group = list(group.results)
 
-        # One coverage per project, because a tag only identifies an endpoint within
-        # a project: `east` is two different searches across CMIP6 and CMIP7.
-        coverage = coverage_of(of_project)
+        # One coverage per group, because a tag only identifies an endpoint within
+        # one question: `east` is two different searches across CMIP6 and CMIP7.
+        coverage = coverage_of(of_group)
 
         models = format_model_support(
-            model_support(of_project), title=project
+            model_support(of_group), title=group.label
         ).splitlines()
 
-        if project not in detailed:
+        if not group.detailed:
             blocks.append(
                 format_endpoint_overview(
-                    of_project, coverage, title=project
+                    of_group, coverage, title=group.label
                 ).splitlines()
             )
             blocks.append(models)
             continue
 
-        for result in of_project:
+        for result in of_group:
             # The title and the summary are one block, so the endpoint's name sits
             # directly above its own headline rather than floating a blank line away
             # from it.
-            title = f"{project}  {result.endpoint.label}"
+            title = f"{group.label}  {result.endpoint.label}"
             if result.summary is None:
                 blocks.append([title, f"  FAILED: {result.failure}"])
                 continue
@@ -988,11 +1005,11 @@ def format_report(
             blocks.append([title, *rendered.rstrip("\n").splitlines()])
 
         # See `_A_PAIR`.
-        if len(of_project) == _A_PAIR:
+        if len(of_group) == _A_PAIR:
             blocks.append(
                 compare_endpoint_summaries(
-                    of_project[0],
-                    of_project[1],
+                    of_group[0],
+                    of_group[1],
                     max_rows=max_rows,
                     facets=facets,
                 )
@@ -1005,18 +1022,18 @@ def format_report(
     return "\n".join(line.rstrip() for line in rendered.splitlines()) + "\n"
 
 
-def report_subject(results: Sequence[EndpointResult], *, stem: str) -> str:
+def report_subject(groups: Sequence[ReportGroup], *, stem: str) -> str:
     """
     Render one subject line for a report covering several endpoints
 
     `SearchSummary.headline` covers one search, and we have nine. What a subject line
     has to carry is whether this is a morning to open the mail: how many endpoints
-    moved, per project, and whether any of them failed.
+    moved, per group, and whether any of them failed.
 
     Parameters
     ----------
-    results
-        What each endpoint said
+    groups
+        One group per tracked requirement, in the order to name them
 
     stem
         What to call the search, e.g. `'pattern-effect'`
@@ -1027,20 +1044,19 @@ def report_subject(results: Sequence[EndpointResult], *, stem: str) -> str:
         The subject line
     """
     parts = []
-    for project in _projects_in_order(results):
-        of_project = [
-            result for result in results if result.endpoint.project == project
-        ]
+    for group in groups:
         changed = [
             result
-            for result in of_project
+            for result in group.results
             if result.summary is not None and result.summary.any_changes
         ]
-        parts.append(f"{project} {len(changed)}/{len(of_project)} changed")
+        parts.append(f"{group.label} {len(changed)}/{len(group.results)} changed")
 
     subject = f"{stem}: {', '.join(parts)}" if parts else f"{stem}: nothing asked"
 
-    n_failed = sum(1 for result in results if result.summary is None)
+    n_failed = sum(
+        1 for group in groups for result in group.results if result.summary is None
+    )
     if n_failed:
         subject = f"[{n_failed} FAILED] {subject}"
 
