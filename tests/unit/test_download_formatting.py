@@ -8,8 +8,6 @@ second copy of the layout to keep in step. These are the things a diff would sho
 you without telling you they were wrong.
 """
 
-from pathlib import Path
-
 import pytest
 from esmporium.datasets import DownloadOutcome
 
@@ -18,8 +16,9 @@ from local.download_formatting import (
     format_download_intent,
     format_download_report,
     readable_bytes,
+    summarise_nodes,
 )
-from local.downloads import IDENTITY_FACETS, DownloadIntent
+from local.downloads import IDENTITY_FACETS
 
 
 def _report(scenes, records, **totals):
@@ -83,8 +82,8 @@ def test_a_failure_is_never_rendered_as_a_success(download_scenes):
         download_scenes, [download_scenes.failed()], n_files=1, n_failed=1
     )
 
-    assert "Failed (1)" in rendered
-    assert "Fetched" not in rendered
+    assert "FAILED (1 file)" in rendered
+    assert "FETCHED" not in rendered
 
 
 def test_a_skipped_file_is_in_neither_table(download_scenes):
@@ -94,8 +93,8 @@ def test_a_skipped_file_is_in_neither_table(download_scenes):
         download_scenes, [download_scenes.skipped()], n_files=1, n_skipped=1
     )
 
-    assert "Fetched" not in rendered
-    assert "Failed" not in rendered
+    assert "FETCHED" not in rendered
+    assert "FAILED" not in rendered
     assert "1 file(s): 0 fetched, 1 already here, 0 failed" in rendered
 
 
@@ -109,9 +108,7 @@ def test_a_file_which_took_a_later_mirror_says_how_many_it_took(download_scenes)
         n_fetched=1,
     )
 
-    row = next(line for line in rendered.splitlines() if "UKESM1-3-LL" in line)
-
-    assert row.split()[-1] == "2"
+    assert "1 file needed a fallback mirror" in rendered
 
 
 def test_a_file_with_no_route_offered_reads_as_that(download_scenes):
@@ -219,82 +216,107 @@ def test_each_requirement_gets_its_own_block(download_scenes):
         facets=IDENTITY_FACETS,
     )
 
-    assert "CMIP7 this run" in rendered
-    assert "CMIP8 this run" in rendered
+    assert "CMIP7" in rendered
+    assert "CMIP8" in rendered
+    # Two headline blocks, so the two runs cannot be read as one.
+    assert rendered.count("file(s):") == 2
 
 
-def _intent(**kwargs):
-    """Build a download intent, defaulting to an empty but searched database."""
-    return DownloadIntent(
-        **{
-            "label": "CMIP7",
-            "n_files": 0,
-            "n_bytes": 0,
-            "n_unsized": 0,
-            "n_known": 325,
-            **kwargs,
-        }
-    )
+def _intent_block(scenes, intents):
+    """Render the 7am download block for `intents`."""
+    return format_download_intent(intents, root=scenes.root, facets=IDENTITY_FACETS)
 
 
-def test_an_unsearched_database_says_so_rather_than_saying_nothing_to_fetch():
+def test_an_unsearched_database_says_so_rather_than_saying_nothing_to_fetch(
+    download_scenes,
+):
     # The failure this exists for, which really happened on the server: a freshly
     # migrated database has no file records, so the plan is empty and the dry run
     # reported "nothing new to fetch" -- which reads as "you already have it all".
     # Opposite situations, identical message. The fix is to say which it is.
-    rendered = format_download_intent(
-        [_intent(n_known=0)], root=Path("/data/cmip7-scratch")
-    )
+    rendered = _intent_block(download_scenes, [download_scenes.intent((), n_known=0)])
 
     assert "a search has not run" in rendered
     assert "already here" not in rendered
 
 
-def test_having_everything_reads_differently_from_knowing_nothing():
-    rendered = format_download_intent(
-        [_intent(n_known=325)], root=Path("/data/cmip7-scratch")
-    )
+def test_having_everything_reads_differently_from_knowing_nothing(download_scenes):
+    rendered = _intent_block(download_scenes, [download_scenes.intent((), n_known=325)])
 
     assert "already here" in rendered
     assert "search has not run" not in rendered
 
 
-def test_an_intent_with_work_names_the_disk_it_is_about_to_fill():
-    rendered = format_download_intent(
-        [_intent(n_files=12, n_bytes=2_100_000_000)],
-        root=Path("/data/cmip7-scratch"),
+def test_an_intent_with_work_is_tabulated_not_just_totalled(download_scenes):
+    # The point of the whole change: "21.2 GB is coming" does not say whether that
+    # is one model you were waiting for or forty you already knew about.
+    rendered = _intent_block(
+        download_scenes,
+        [
+            download_scenes.intent(
+                [
+                    download_scenes.tally(107, model="CanESM6-0-MR", n_files=3),
+                    download_scenes.tally(108, model="UKESM1-3-LL", n_files=2),
+                ]
+            )
+        ],
     )
 
-    assert "CMIP7: 12 file(s), 2.0 GB" in rendered
-    assert "/data/cmip7-scratch" in rendered
+    assert "2 datasets, 5 files" in rendered
+    assert "CanESM6-0-MR" in rendered
+    assert "UKESM1-3-LL" in rendered
+    # The id is the search report's id, so one dataset can be followed across.
+    assert "107" in rendered
+    assert str(download_scenes.root) in rendered
 
 
-def test_files_of_unpublished_size_are_named_not_rounded_away():
-    # Otherwise `0 B across 0 of them` reads as "nothing to fetch" when there is
-    # plenty -- the count is the only thing that says otherwise.
-    rendered = format_download_intent(
-        [_intent(n_files=3, n_bytes=0, n_unsized=3)], root=Path("/data/x")
+def test_files_of_unpublished_size_are_named_not_rounded_away(download_scenes):
+    # Otherwise a small total reads as a small download when it is only an
+    # unmeasured one.
+    rendered = _intent_block(
+        download_scenes,
+        [
+            download_scenes.intent(
+                [download_scenes.tally(n_files=3, n_bytes=0, n_unsized=3)]
+            )
+        ],
     )
 
-    assert "+3 of unpublished size" in rendered
+    assert "unpublished size" in rendered
 
 
-def test_one_requirement_knowing_nothing_does_not_silence_another():
+def test_one_requirement_knowing_nothing_does_not_silence_another(download_scenes):
     # With two requirements downloading, one of them being unsearched must not make
     # the whole block read as "run a search": the other one's work is still real.
-    rendered = format_download_intent(
+    rendered = _intent_block(
+        download_scenes,
         [
-            _intent(label="CMIP7", n_files=2, n_bytes=1024),
-            _intent(label="CMIP8", n_known=0),
+            download_scenes.intent(label="CMIP7"),
+            download_scenes.intent((), label="CMIP8", n_known=0),
         ],
-        root=Path("/data/x"),
     )
 
-    assert "CMIP7: 2 file(s)" in rendered
-    assert "CMIP8: nothing recorded yet" in rendered
+    assert "TO DOWNLOAD (CMIP7:" in rendered
+    assert "CMIP8" in rendered
+    assert "has a search run?" in rendered
 
 
-def test_no_requirement_downloading_renders_nothing_at_all():
+def test_no_requirement_downloading_renders_nothing_at_all(download_scenes):
     # A report for questions that are only ever watched should not carry a heading
     # about downloading.
-    assert format_download_intent([], root=Path("/data/x")) == ""
+    assert _intent_block(download_scenes, []) == ""
+
+
+@pytest.mark.parametrize(
+    ("nodes", "expected"),
+    [
+        ((), "-"),
+        (("esgf.ceda.ac.uk",), "esgf.ceda.ac.uk"),
+        (("esgf.ceda.ac.uk", "esgf.ceda.ac.uk"), "esgf.ceda.ac.uk"),
+        (("esgf.ceda.ac.uk", "esgf.nci.org.au"), "mixed (2 nodes)"),
+    ],
+)
+def test_a_dataset_served_by_several_nodes_says_so(nodes, expected):
+    # Naming one of them would be picking a winner. A dataset is several files and
+    # a run which lost a node part way through took some from each.
+    assert summarise_nodes(nodes) == expected

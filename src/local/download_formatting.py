@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from local.downloads import tally_records
 from local.summary_formatting import _SHORT_HEADERS, _capped, render_table
 
 if TYPE_CHECKING:
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from esmporium.db import DownloadSummary
     from esmporium.downloads import RunTotals
 
-    from local.downloads import DownloadIntent, DownloadRecord
+    from local.downloads import DatasetTally, DownloadIntent, DownloadRecord
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,14 @@ class DownloadGroup:
     """
 
     label: str
-    """Which tracked requirement this is the run for"""
+    """
+    Which tracked requirement this is the run for
+
+    The requirement's own name rather than just its project, e.g.
+    `'pattern-effect-tas-mon-historical \u00b7 CMIP7'`. A download report has to say
+    which question asked for the bytes: the project alone stops being an answer the
+    moment two questions share one.
+    """
 
     records: tuple[DownloadRecord, ...]
     """Every file it tried, from `local.downloads.describe_results`"""
@@ -125,6 +133,160 @@ def readable_outcome(outcome: DownloadOutcome) -> str:
     return outcome.value.replace("_", " ")
 
 
+def summarise_nodes(nodes: Sequence[str]) -> str:
+    """
+    Render which data node served a group of files
+
+    A dataset version is several files and they need not all come from the same
+    mirror -- CMIP7 publishes ACCESS-ESM1-6 as eighteen files per variant, and a run
+    which lost a node part way through will have taken some from each. Naming one of
+    them would be picking a winner, so the honest answer is to say there were
+    several.
+
+    Parameters
+    ----------
+    nodes
+        The nodes which served them, in any order, deduplicated or not
+
+    Returns
+    -------
+    :
+        The node when they agree, how many there were when they do not, and `'-'`
+        when nothing has been fetched yet
+
+    Examples
+    --------
+    >>> summarise_nodes(["esgf.ceda.ac.uk"])
+    'esgf.ceda.ac.uk'
+    >>> summarise_nodes(["esgf.ceda.ac.uk", "esgf.nci.org.au"])
+    'mixed (2 nodes)'
+    >>> summarise_nodes([])
+    '-'
+    """
+    distinct = sorted(set(nodes))
+    if not distinct:
+        return "-"
+
+    if len(distinct) == 1:
+        return distinct[0]
+
+    return f"mixed ({len(distinct)} nodes)"
+
+
+def _tally_row(tally: DatasetTally, facets: Sequence[str], *, node: bool) -> list[str]:
+    """
+    Render one dataset version as a table row
+
+    Parameters
+    ----------
+    tally
+        The dataset version's files, counted
+
+    facets
+        Which facets to name it by, in order
+
+    node
+        Whether to append the serving-node column. A plan has not asked anybody for
+        anything yet, so it has nothing to put there.
+
+    Returns
+    -------
+    :
+        The cells
+    """
+    size = readable_bytes(tally.n_bytes)
+    if tally.n_unsized:
+        # A small total must not read as a small download when it is only an
+        # unmeasured one.
+        size = f"{size} +{tally.n_unsized}?"
+
+    cells = [
+        str(tally.dataset_version_id),
+        *(tally.facets.get(facet, "-") for facet in facets),
+        tally.version,
+        str(tally.n_files),
+        size,
+    ]
+    if node:
+        cells.append(summarise_nodes(tally.nodes))
+
+    return cells
+
+
+def _tally_table(
+    tallies: Sequence[DatasetTally],
+    facets: Sequence[str],
+    *,
+    max_rows: int,
+    node: bool = False,
+) -> list[str]:
+    """
+    Render dataset versions as a table, folding away the ones past `max_rows`
+
+    Parameters
+    ----------
+    tallies
+        The dataset versions to show, in reading order
+
+    facets
+        Which facets to name them by
+
+    max_rows
+        How many to show before folding the rest away
+
+    node
+        Whether to show which data node served each one
+
+    Returns
+    -------
+    :
+        The lines of the table, and the count of what was folded away
+    """
+    headers = ["id", *_headers(facets), "version", "files", "size"]
+    if node:
+        headers.append("from")
+
+    rows = [_tally_row(tally, facets, node=node) for tally in tallies]
+    kept, hidden = _capped(rows, max_rows)
+    lines = [render_table(headers, kept, right=("files", "size"))]
+    if hidden:
+        lines.append(f"  ... and {hidden} more")
+
+    return lines
+
+
+def _counted(n_datasets: int, n_files: int, n_bytes: int, n_unsized: int = 0) -> str:
+    """
+    Render the bracketed count a table heading carries
+
+    Parameters
+    ----------
+    n_datasets
+        How many dataset versions
+
+    n_files
+        How many files
+
+    n_bytes
+        How many bytes they come to
+
+    n_unsized
+        How many files were published with no size
+
+    Returns
+    -------
+    :
+        The count, e.g. `'47 datasets, 325 files, 21.2 GB'`
+    """
+    datasets = "dataset" if n_datasets == 1 else "datasets"
+    files = "file" if n_files == 1 else "files"
+    counted = f"{n_datasets} {datasets}, {n_files} {files}, {readable_bytes(n_bytes)}"
+    if n_unsized:
+        counted += f" (+{n_unsized} of unpublished size)"
+
+    return counted
+
+
 def _headers(facets: Sequence[str], *extra: str) -> list[str]:
     """
     Build a row of column headings, abbreviating the wide facet names
@@ -169,7 +331,13 @@ def _fetched_section(
     records: Sequence[DownloadRecord], *, facets: Sequence[str], max_rows: int
 ) -> list[str]:
     """
-    Render the files this run actually moved
+    Render what this run actually moved, a row per dataset version
+
+    Per dataset rather than per file, because a file is an arbitrary slice of one:
+    CMIP7 publishes ACCESS-ESM1-6 as eighteen files per variant, and eighteen rows
+    differing only by date range say nothing a count and a size do not. A file which
+    *failed* is reported on its own, by [_failed_section][(m).], because there the
+    particular file is the point.
 
     Parameters
     ----------
@@ -177,7 +345,7 @@ def _fetched_section(
         Every record of the run
 
     facets
-        Which facets to show
+        Which facets to name a dataset by
 
     max_rows
         How many rows to show before folding the rest away
@@ -187,33 +355,20 @@ def _fetched_section(
     :
         The lines, or an empty list if nothing was fetched
     """
-    rows = []
-    for record in records:
-        outcome = record.result.fetch
-        if outcome is None or record.result.skipped:
-            continue
-
-        rows.append(
-            [
-                *_identity(record, facets),
-                record.filename,
-                readable_bytes(outcome.size_on_disk),
-                outcome.route.data_node,
-                # "we got it, but only from the fourth mirror" is worth seeing.
-                str(len(record.result.failures)) if record.result.failures else "-",
-            ]
-        )
-
-    if not rows:
+    tallies = tally_records(records)
+    if not tallies:
         return []
 
-    kept, hidden = _capped(rows, max_rows)
-    headers = _headers(facets, "version", "file", "size", "from", "after")
-    lines = [f"Fetched ({len(rows)})", render_table(headers, kept, right=("size",))]
-    if hidden:
-        lines.append(f"  ... and {hidden} more")
+    counted = _counted(
+        len(tallies),
+        sum(tally.n_files for tally in tallies),
+        sum(tally.n_bytes for tally in tallies),
+    )
 
-    return lines
+    return [
+        f"FETCHED ({counted})",
+        *_tally_table(tallies, facets, max_rows=max_rows, node=True),
+    ]
 
 
 def _failed_section(
@@ -247,6 +402,7 @@ def _failed_section(
         last = record.result.failures[-1] if record.result.failures else None
         rows.append(
             [
+                str(record.dataset_version_id),
                 *_identity(record, facets),
                 record.filename,
                 str(len(record.result.failures)),
@@ -259,8 +415,12 @@ def _failed_section(
         )
 
     kept, hidden = _capped(rows, max_rows)
-    headers = _headers(facets, "version", "file", "tried", "ended as")
-    lines = [f"Failed ({len(failed)})", render_table(headers, kept, right=("tried",))]
+    headers = ["id", *_headers(facets, "version", "file", "tried", "ended as")]
+    plural = "file" if len(failed) == 1 else "files"
+    lines = [
+        f"FAILED ({len(failed)} {plural})",
+        render_table(headers, kept, right=("tried",)),
+    ]
     if hidden:
         lines.append(f"  ... and {hidden} more")
 
@@ -300,11 +460,25 @@ def _headline(group: DownloadGroup, *, root: Path) -> list[str]:
         # ones that need somebody to look.
         counts.append(f"{totals.n_given_up} for good")
 
-    return [
-        f"{group.label} this run",
+    lines = [
+        group.label,
         f"  {totals.n_files} file(s): {', '.join(counts)}",
         f"  {readable_bytes(totals.bytes_fetched)} moved into {root}",
     ]
+
+    # "We got it, but only from the fourth mirror" is worth knowing before every
+    # mirror is down. It used to be a column, which in a per-dataset table would
+    # have been a column of mostly zeros; as a line it only appears when it is true.
+    fell_back = sum(
+        1
+        for record in group.records
+        if record.result.succeeded and record.result.failures
+    )
+    if fell_back:
+        files = "file" if fell_back == 1 else "files"
+        lines.append(f"  {fell_back} {files} needed a fallback mirror")
+
+    return lines
 
 
 def _held_lines(summary: DownloadSummary) -> list[str]:
@@ -446,7 +620,13 @@ def download_subject(groups: Sequence[DownloadGroup], *, stem: str) -> str:
     return subject
 
 
-def format_download_intent(intents: Sequence[DownloadIntent], *, root: Path) -> str:
+def format_download_intent(
+    intents: Sequence[DownloadIntent],
+    *,
+    root: Path,
+    facets: Sequence[str],
+    max_rows: int = 50,
+) -> str:
     """
     Render what is about to be downloaded, for the email which goes out first
 
@@ -455,6 +635,11 @@ def format_download_intent(intents: Sequence[DownloadIntent], *, root: Path) -> 
     "this much is coming" and then "this much arrived", and a gap between the two
     is a thing you can notice.
 
+    Tabulated by dataset version rather than totalled, because "21.2 GB is coming"
+    does not tell you whether that is one model you were waiting for or forty you
+    already knew about. The `id` column is the search report's `id` column, so a
+    dataset added overnight can be followed straight into this table.
+
     Parameters
     ----------
     intents
@@ -462,6 +647,12 @@ def format_download_intent(intents: Sequence[DownloadIntent], *, root: Path) -> 
 
     root
         Where the files are going, so a reader knows which disk is about to fill
+
+    facets
+        Which facets to name a dataset by, e.g. [local.downloads.IDENTITY_FACETS][]
+
+    max_rows
+        How many rows of each table to show before folding the rest away
 
     Returns
     -------
@@ -480,35 +671,41 @@ def format_download_intent(intents: Sequence[DownloadIntent], *, root: Path) -> 
         # no file records at all, and a download planned against one finds nothing
         # to do for a reason which has nothing to do with downloading.
         return (
-            "About to download\n"
+            "TO DOWNLOAD\n"
             "  nothing: no files are recorded yet, so a search has not run since "
             "this\n  database was created or migrated. Run the search first."
         )
 
     if all(intent.nothing_to_do for intent in intents):
-        return "About to download\n  nothing new to fetch; it is all already here"
+        return "TO DOWNLOAD\n  nothing new; it is all already here"
 
-    lines = ["About to download"]
+    lines: list[str] = []
     for intent in intents:
         if intent.nothing_known:
-            lines.append(f"  {intent.label}: nothing recorded yet -- has a search run?")
+            lines.append(
+                f"TO DOWNLOAD ({intent.label})\n"
+                "  nothing recorded yet -- has a search run?"
+            )
             continue
 
         if intent.nothing_to_do:
             lines.append(
-                f"  {intent.label}: nothing new ({intent.n_known} already here)"
+                f"TO DOWNLOAD ({intent.label})\n"
+                f"  nothing new; all {intent.n_known} already here"
             )
             continue
 
-        line = (
-            f"  {intent.label}: {intent.n_files} file(s), "
-            f"{readable_bytes(intent.n_bytes)}"
+        counted = _counted(
+            intent.n_datasets, intent.n_files, intent.n_bytes, intent.n_unsized
         )
-        if intent.n_unsized:
-            line += f" (+{intent.n_unsized} of unpublished size)"
+        lines.append(
+            "\n".join(
+                [
+                    f"TO DOWNLOAD ({intent.label}: {counted})",
+                    *_tally_table(intent.tallies, facets, max_rows=max_rows),
+                    f"  into {root}",
+                ]
+            )
+        )
 
-        lines.append(line)
-
-    lines.append(f"  into {root}")
-
-    return "\n".join(lines)
+    return "\n\n".join(lines)

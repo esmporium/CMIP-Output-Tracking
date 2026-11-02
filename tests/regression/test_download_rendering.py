@@ -15,17 +15,28 @@ from local.download_formatting import download_subject, format_download_report
 from local.downloads import IDENTITY_FACETS
 
 CMIP7_MODELS = (
-    ("ACCESS-ESM1-6", "g115", "20261008"),
-    ("CanESM6-0-MR", "g150", "20260629"),
-    ("UKCM2-0-LL", "g110", "20260909"),
-    ("UKESM1-3-LL", "g110", "20261020"),
+    ("ACCESS-ESM1-6", "g115", "20261008", 18),
+    ("CanESM6-0-MR", "g150", "20260629", 3),
+    ("UKCM2-0-LL", "g110", "20260909", 2),
+    ("UKESM1-3-LL", "g110", "20261020", 2),
 )
 """
-Real CMIP7 models, grids and version stamps the pattern-effect search returns
+Real CMIP7 models, grids, version stamps and file counts
 
 Real values rather than `model-1`, for the same reason the search fixtures use them:
 a checked-in copy of an email full of placeholders is one nobody can review by eye,
-which is the only thing it is for.
+which is the only thing it is for. The file counts are real too, and lopsided --
+measured 2026-11-03 against the live archive.
+"""
+
+REQUIREMENT = "pattern-effect-tas-mon-historical \u00b7 CMIP7"
+"""
+What the driver titles a download block with
+
+The requirement and its project, not just the project: once two questions share a
+project, the project stops identifying which asked for the bytes. Spelled out here
+rather than defaulted, because a checked-in copy of the mail should carry the title
+that really goes out.
 """
 
 TYPICAL_FILE_BYTES = 65345526
@@ -58,27 +69,32 @@ def first_run(download_scenes):
     """
     Get the bulk run: everything the search has found, arriving at once
 
-    The morning this is set up, and the only one on which the totals are large. Two
-    files per dataset version, because that is how CMIP7 publishes a historical
-    monthly series -- split at 1950.
+    The morning this is set up, and the only one on which the totals are large.
+
+    The file counts are the real ones, which are lopsided: CMIP7 publishes
+    ACCESS-ESM1-6 as 18 files per variant and everything else as 2 or 3. That is
+    exactly why both emails report dataset versions rather than files.
     """
     records = []
     file_id = 1
-    for model, grid, version in CMIP7_MODELS:
-        for span in ("185001-194912", "195001-202112"):
+    dataset_version_id = 40
+    for model, grid, version, n_files in CMIP7_MODELS:
+        for part in range(n_files):
             records.append(
                 download_scenes.fetched(
                     f"tas_tavg-h2m-hxy-u_mon_glb_{grid}_{model}"
-                    f"_historical_r1i1p1f1_{span}.nc",
-                    size=TYPICAL_FILE_BYTES,
+                    f"_historical_r1i1p1f1_part{part:02d}.nc",
+                    size=TYPICAL_FILE_BYTES // n_files,
                     file_id=file_id,
                     model=model,
                     variant_label="r1i1p1f1",
                     version=version,
                     grid_label=grid,
+                    dataset_version_id=dataset_version_id,
                 )
             )
             file_id += 1
+        dataset_version_id += 1
 
     return tuple(records)
 
@@ -95,7 +111,7 @@ def test_the_first_bulk_run(file_regression, download_scenes, first_run):
     checked-in copy of the email is for reading and a 325-row table is not.
     """
     rendered = report(
-        [download_scenes.group(first_run)],
+        [download_scenes.group(first_run, label=REQUIREMENT)],
         download_scenes.held(
             done=len(first_run), bytes_done=len(first_run) * TYPICAL_FILE_BYTES
         ),
@@ -117,7 +133,7 @@ def test_a_quiet_morning(file_regression, download_scenes):
     what covers the job having run at all.
     """
     rendered = report(
-        [download_scenes.group()],
+        [download_scenes.group(label=REQUIREMENT)],
         download_scenes.held(done=325, bytes_done=325 * TYPICAL_FILE_BYTES),
         root=download_scenes.root,
     )
@@ -143,11 +159,12 @@ def test_a_new_variant_appears(file_regression, download_scenes):
             variant_label="r26i1p1f1",
             version="20260629",
             grid_label="g150",
+            dataset_version_id=108,
         )
         for n, span in enumerate(("185001-194912", "195001-202112"))
     )
     rendered = report(
-        [download_scenes.group(arrived)],
+        [download_scenes.group(arrived, label=REQUIREMENT)],
         download_scenes.held(done=327, bytes_done=327 * TYPICAL_FILE_BYTES),
         root=download_scenes.root,
     )
@@ -171,6 +188,20 @@ def test_a_morning_with_trouble(file_regression, download_scenes):
             size=TYPICAL_FILE_BYTES,
             after_failures=("esgf.nci.org.au",),
         ),
+        # Same dataset as the failure below, so it appears in both tables: three
+        # files landed and one did not. A partial dataset has to stay visible.
+        download_scenes.fetched(
+            "tas_tavg-h2m-hxy-u_mon_glb_g137_UKCM2a-0-HH"
+            "_historical_r1i1p1f1_185001-194912.nc",
+            size=TYPICAL_FILE_BYTES // 3,
+            file_id=50,
+            model="UKCM2a-0-HH",
+            variant_label="r1i1p1f1",
+            version="20260826",
+            grid_label="g137",
+            dataset_version_id=51,
+            served_by="esgf.nci.org.au",
+        ),
         download_scenes.failed(
             "tas_tavg-h2m-hxy-u_mon_glb_g137_UKCM2a-0-HH"
             "_historical_r1i1p1f1_185001-194912.nc",
@@ -180,6 +211,7 @@ def test_a_morning_with_trouble(file_regression, download_scenes):
             grid_label="g137",
             outcome=DownloadOutcome.NEEDS_CREDENTIALS,
             tried=("esgf.ceda.ac.uk",),
+            dataset_version_id=51,
         ),
         download_scenes.failed(
             "tas_tavg-h2m-hxy-u_mon_glb_g134_CAS-ESM2-1-CSM"
@@ -190,11 +222,12 @@ def test_a_morning_with_trouble(file_regression, download_scenes):
             grid_label="g134",
             outcome=DownloadOutcome.MISSING,
             tried=("esgf.ceda.ac.uk", "esgf.nci.org.au"),
+            dataset_version_id=52,
         ),
         download_scenes.skipped(),
     )
     rendered = report(
-        [download_scenes.group(records, n_given_up=2)],
+        [download_scenes.group(records, label=REQUIREMENT, n_files=5, n_given_up=2)],
         download_scenes.held(done=323, given_up=2, bytes_done=323 * TYPICAL_FILE_BYTES),
         root=download_scenes.root,
     )
@@ -211,7 +244,7 @@ def test_more_rows_than_anyone_can_read(file_regression, download_scenes, first_
     what happened.
     """
     rendered = report(
-        [download_scenes.group(first_run)],
+        [download_scenes.group(first_run, label=REQUIREMENT)],
         download_scenes.held(done=len(first_run)),
         root=download_scenes.root,
         max_rows=3,

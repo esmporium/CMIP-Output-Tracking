@@ -24,7 +24,7 @@ from esmporium.db import (
 from sqlmodel import Session, col, select
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from esmporium.db import DownloadPlanItem
     from esmporium.downloads import DownloadResult
@@ -124,6 +124,63 @@ class DownloadSettings:
 
 
 @dataclass(frozen=True)
+class DatasetTally:
+    """
+    One dataset version's worth of files, counted
+
+    The unit both emails report in. A dataset version is what a person thinks in --
+    "CanESM6-0-MR r26i1p1f1" -- while a file is an arbitrary slice of one: CMIP7
+    publishes ACCESS-ESM1-6 as eighteen files per variant and CanESM6-0-MR as three,
+    which says something about the publisher and nothing about the science.
+
+    Carries [dataset_version_id][(c).dataset_version_id] so a reader can follow one
+    dataset across the morning: the number in the `ADDED` table of the search report
+    is the same number here.
+    """
+
+    dataset_version_id: int
+    """Which dataset version this is, as the search report's `id` column shows it"""
+
+    facets: Mapping[str, str]
+    """
+    Which dataset it is, keyed by facet name
+
+    The keys are [IDENTITY_FACETS][(m).]. A facet the database holds as `NULL`,
+    which `grid_label` is allowed to be, reads as `'-'`.
+    """
+
+    version: str
+    """The dataset version, as ESGF reports it"""
+
+    n_files: int
+    """How many files of it this tally covers"""
+
+    n_bytes: int
+    """
+    How many bytes those files come to
+
+    What the API published, for a tally of a plan; what landed on disk, for a tally
+    of a finished run. Files published with no size at all contribute nothing, which
+    is why [n_unsized][(c).n_unsized] is counted separately.
+    """
+
+    n_unsized: int = 0
+    """
+    How many of the files were published with no size
+
+    Named rather than folded into zero, so that a small total cannot read as a small
+    download when it is only an unmeasured one.
+    """
+
+    nodes: tuple[str, ...] = ()
+    """
+    Which data nodes served these files, deduplicated
+
+    Empty for a plan, which has not asked anybody for anything yet.
+    """
+
+
+@dataclass(frozen=True)
 class DownloadIntent:
     """
     What one tracked requirement is about to fetch, before it fetches any of it
@@ -137,23 +194,12 @@ class DownloadIntent:
     label: str
     """Which tracked requirement this is the plan for"""
 
-    n_files: int
-    """How many files are to be fetched"""
-
-    n_bytes: int
+    tallies: tuple[DatasetTally, ...]
     """
-    How many bytes those files were published as
+    One per dataset version with something still to fetch, in reading order
 
-    An estimate, and the API's number rather than ours: it is what ESGF said, not
-    what is on disk. Excludes any file published with no size at all.
-    """
-
-    n_unsized: int
-    """
-    How many of the files were published with no size
-
-    Named rather than folded into zero, so that `0 B across 0 of them` cannot read
-    as "nothing to fetch" when there is plenty.
+    Empty when there is nothing to do, which [n_known][(c).n_known] is needed to
+    interpret.
     """
 
     n_known: int
@@ -168,9 +214,29 @@ class DownloadIntent:
     """
 
     @property
+    def n_datasets(self) -> int:
+        """How many dataset versions have something to fetch"""
+        return len(self.tallies)
+
+    @property
+    def n_files(self) -> int:
+        """How many files are to be fetched"""
+        return sum(tally.n_files for tally in self.tallies)
+
+    @property
+    def n_bytes(self) -> int:
+        """How many bytes those files were published as"""
+        return sum(tally.n_bytes for tally in self.tallies)
+
+    @property
+    def n_unsized(self) -> int:
+        """How many of them were published with no size"""
+        return sum(tally.n_unsized for tally in self.tallies)
+
+    @property
     def nothing_to_do(self) -> bool:
         """Whether there is nothing to fetch for this requirement"""
-        return not self.n_files
+        return not self.tallies
 
     @property
     def nothing_known(self) -> bool:
@@ -183,41 +249,191 @@ class DownloadIntent:
         return not self.n_known
 
 
-def intend(
-    label: str, plan: Sequence[DownloadPlanItem], *, n_known: int
-) -> DownloadIntent:
+def _identities(
+    session: Session, dataset_version_ids: Sequence[int]
+) -> dict[int, tuple[Mapping[str, str], str]]:
     """
-    Add a plan up into what it is about to do
+    Look up which dataset each version belongs to
+
+    One query for the whole run rather than one per version: a bulk run is dozens of
+    versions and a round trip each to answer "which model was that" would cost more
+    than the tallying does.
 
     Parameters
     ----------
-    label
-        Which tracked requirement this is the plan for
+    session
+        The session to read from
 
-    plan
-        What [plan_only][(m).] returned, i.e. what is still to fetch
-
-    n_known
-        How many files we know about for this requirement at all. From
-        [plan_only][(m).] with `skip_done=False`.
+    dataset_version_ids
+        The versions to describe
 
     Returns
     -------
     :
-        The intent
+        The facets and the version string, keyed by dataset version id
+
+        A version we find no row for is simply absent, which the callers read as
+        "describe it as unknown rather than dropping it".
     """
-    sized = [
-        item.request.expected_size
-        for item in plan
-        if item.request.expected_size is not None
-    ]
+    if not dataset_version_ids:
+        return {}
+
+    rows = session.exec(
+        select(DatasetVersion, Dataset)
+        .join(Dataset, col(DatasetVersion.dataset_id) == col(Dataset.id))
+        .where(col(DatasetVersion.id).in_(list(dataset_version_ids)))
+    ).all()
+
+    return {
+        version.id: (
+            {facet: getattr(dataset, facet) or "-" for facet in IDENTITY_FACETS},
+            version.version,
+        )
+        for version, dataset in rows
+        if version.id is not None
+    }
+
+
+UNKNOWN_FACETS: Mapping[str, str] = dict.fromkeys(IDENTITY_FACETS, "-")
+"""
+What to show for a dataset we could not find a row for
+
+Should not happen -- a plan and a result both came from those rows -- but printing a
+row bare is better than dropping it, because a download nobody can account for is
+exactly the one worth seeing.
+"""
+
+
+def describe_plan(
+    engine: Engine, label: str, plan: Sequence[DownloadPlanItem], *, n_known: int
+) -> DownloadIntent:
+    """
+    Tally a plan by dataset version, ready to put in front of a person
+
+    Parameters
+    ----------
+    engine
+        The database to read the dataset identities from
+
+    label
+        Which tracked requirement this is the plan for
+
+    plan
+        The files still to fetch. See [plan_only][(m).].
+
+    n_known
+        How many files we know of for this requirement at all, fetched or not.
+        See [DownloadIntent.n_known][(m).DownloadIntent.n_known].
+
+    Returns
+    -------
+    :
+        The intent, with one tally per dataset version, in dataset order
+    """
+    grouped: dict[int, list[DownloadPlanItem]] = {}
+    for item in plan:
+        grouped.setdefault(item.dataset_version_id, []).append(item)
+
+    with Session(engine) as session:
+        known = _identities(session, tuple(grouped))
+
+    tallies = []
+    for dataset_version_id, items in grouped.items():
+        facets, version = known.get(dataset_version_id, (UNKNOWN_FACETS, "-"))
+        sized = [
+            item.request.expected_size
+            for item in items
+            if item.request.expected_size is not None
+        ]
+        tallies.append(
+            DatasetTally(
+                dataset_version_id=dataset_version_id,
+                facets=facets,
+                version=version,
+                n_files=len(items),
+                n_bytes=sum(sized),
+                n_unsized=len(items) - len(sized),
+            )
+        )
 
     return DownloadIntent(
-        label=label,
-        n_files=len(plan),
-        n_bytes=sum(sized),
-        n_unsized=len(plan) - len(sized),
-        n_known=n_known,
+        label=label, tallies=tuple(_in_reading_order(tallies)), n_known=n_known
+    )
+
+
+def tally_records(records: Iterable[DownloadRecord]) -> tuple[DatasetTally, ...]:
+    """
+    Tally finished results by dataset version
+
+    A pure function of what [describe_results][(m).] handed back, so the renderer's
+    tests need no database. Counts only the files which actually arrived: bytes on
+    disk, not bytes promised, and the nodes which really served them.
+
+    Parameters
+    ----------
+    records
+        The run's records. Failures and already-here files are ignored, because this
+        is the tally of what *moved*; failures are reported per file, where the
+        particular file is the point.
+
+    Returns
+    -------
+    :
+        One tally per dataset version which got at least one file, in reading order
+    """
+    grouped: dict[int, list[DownloadRecord]] = {}
+    for record in records:
+        if record.result.fetch is None or record.result.skipped:
+            continue
+
+        grouped.setdefault(record.dataset_version_id, []).append(record)
+
+    tallies = []
+    for dataset_version_id, of_dataset in grouped.items():
+        fetches = [
+            record.result.fetch
+            for record in of_dataset
+            if record.result.fetch is not None
+        ]
+        tallies.append(
+            DatasetTally(
+                dataset_version_id=dataset_version_id,
+                facets=of_dataset[0].facets,
+                version=of_dataset[0].version,
+                n_files=len(fetches),
+                n_bytes=sum(fetch.size_on_disk for fetch in fetches),
+                nodes=tuple(fetch.route.data_node for fetch in fetches),
+            )
+        )
+
+    return tuple(_in_reading_order(tallies))
+
+
+def _in_reading_order(tallies: Iterable[DatasetTally]) -> list[DatasetTally]:
+    """
+    Sort tallies the way a person scans them
+
+    By model then variant, case-insensitively, so that `CanESM6-0-MR` sits beside
+    `CanESM6-0-LR` instead of being thrown elsewhere by where ASCII puts a
+    lower-case letter -- the same ordering `local.models` uses.
+
+    Parameters
+    ----------
+    tallies
+        The tallies to sort
+
+    Returns
+    -------
+    :
+        Them, sorted
+    """
+    return sorted(
+        tallies,
+        key=lambda tally: (
+            str(tally.facets.get("model", "")).lower(),
+            str(tally.facets.get("variant_label", "")).lower(),
+            tally.version,
+        ),
     )
 
 
@@ -329,6 +545,15 @@ class DownloadRecord:
     filename: str
     """The file's own name"""
 
+    dataset_version_id: int
+    """
+    Which dataset version it belongs to
+
+    The same number the search report's `id` column shows, so one dataset can be
+    followed from "added overnight" through to "fetched". `-1` for a file we could
+    not find a row for, which should not happen.
+    """
+
 
 def describe_results(
     engine: Engine, results: Sequence[DownloadResult]
@@ -380,6 +605,7 @@ def describe_results(
                 {facet: getattr(dataset, facet) or "-" for facet in IDENTITY_FACETS},
                 version.version,
                 file.filename,
+                version.id if version.id is not None else -1,
             )
             for file, version, dataset in rows
         }
@@ -391,10 +617,14 @@ def describe_results(
             described.append(_bare_record(result))
             continue
 
-        facets, version, filename = found
+        facets, version, filename, dataset_version_id = found
         described.append(
             DownloadRecord(
-                result=result, facets=facets, version=version, filename=filename
+                result=result,
+                facets=facets,
+                version=version,
+                filename=filename,
+                dataset_version_id=dataset_version_id,
             )
         )
 
@@ -417,7 +647,8 @@ def _bare_record(result: DownloadResult) -> DownloadRecord:
     """
     return DownloadRecord(
         result=result,
-        facets=dict.fromkeys(IDENTITY_FACETS, "-"),
+        facets=UNKNOWN_FACETS,
         version="-",
         filename=result.request.dest.name,
+        dataset_version_id=-1,
     )

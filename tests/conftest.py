@@ -40,7 +40,7 @@ from esmporium.downloads import (
 )
 
 from local.download_formatting import DownloadGroup
-from local.downloads import DownloadRecord
+from local.downloads import DatasetTally, DownloadIntent, DownloadRecord
 from local.endpoints import Endpoint, EndpointResult
 from local.summary_formatting import ReportGroup
 
@@ -334,6 +334,12 @@ class DownloadScenes:
     held: typing.Callable[..., DownloadSummary]
     """Build what the database holds overall"""
 
+    tally: typing.Callable[..., DatasetTally]
+    """Build one dataset version's worth of files, counted"""
+
+    intent: typing.Callable[..., DownloadIntent]
+    """Build what one requirement is about to fetch"""
+
     group: typing.Callable[..., DownloadGroup]
     """Build one tracked requirement's download run"""
 
@@ -386,7 +392,14 @@ def download_scenes():
         )
 
     def _record(  # noqa: PLR0913 - one argument per thing a scene varies
-        result, *, model, variant_label, version, filename, grid_label
+        result,
+        *,
+        model,
+        variant_label,
+        version,
+        filename,
+        grid_label,
+        dataset_version_id,
     ):
         """Pair a result with the identity a report shows it under."""
         return DownloadRecord(
@@ -398,6 +411,7 @@ def download_scenes():
             },
             version=version,
             filename=filename,
+            dataset_version_id=dataset_version_id,
         )
 
     def fetched(  # noqa: PLR0913 - one argument per thing a scene varies
@@ -409,6 +423,7 @@ def download_scenes():
         variant_label="r1i1p1f2",
         version="20261020",
         grid_label="g110",
+        dataset_version_id=101,
         served_by="esgf.ceda.ac.uk",
         after_failures=(),
     ):
@@ -457,6 +472,7 @@ def download_scenes():
             version=version,
             filename=filename,
             grid_label=grid_label,
+            dataset_version_id=dataset_version_id,
         )
 
     def failed(  # noqa: PLR0913 - one argument per thing a scene varies
@@ -468,6 +484,7 @@ def download_scenes():
         variant_label="r1i1p1f1",
         version="20260909",
         grid_label="g110",
+        dataset_version_id=109,
         tried=("esgf.ceda.ac.uk", "esgf.nci.org.au"),
         outcome=DownloadOutcome.HOST_FAULT,
     ):
@@ -507,6 +524,7 @@ def download_scenes():
             version=version,
             filename=filename,
             grid_label=grid_label,
+            dataset_version_id=dataset_version_id,
         )
 
     def skipped(  # noqa: PLR0913 - one argument per thing a scene varies
@@ -518,6 +536,7 @@ def download_scenes():
         variant_label="r1i1p1f1",
         version="20260629",
         grid_label="g150",
+        dataset_version_id=120,
     ):
         """Build a record of a file which was already on disk."""
         result = DownloadResult(
@@ -541,6 +560,7 @@ def download_scenes():
             version=version,
             filename=filename,
             grid_label=grid_label,
+            dataset_version_id=dataset_version_id,
         )
 
     def totals(  # noqa: PLR0913 - one argument per field a scene fills in
@@ -574,6 +594,46 @@ def download_scenes():
         return DownloadSummary(
             n_by_status={status: count for status, count in counts.items() if count},
             bytes_by_status={"done": bytes_done} if bytes_done else {},
+        )
+
+    def tally(  # noqa: PLR0913 - one argument per thing a scene varies
+        dataset_version_id=101,
+        *,
+        model="UKESM1-3-LL",
+        variant_label="r1i1p1f2",
+        grid_label="g110",
+        version="20261020",
+        n_files=3,
+        n_bytes=3 * 65345526,
+        n_unsized=0,
+        nodes=(),
+    ):
+        """Build one dataset version's worth of files, counted."""
+        return DatasetTally(
+            dataset_version_id=dataset_version_id,
+            facets={
+                "model": model,
+                "variant_label": variant_label,
+                "grid_label": grid_label,
+            },
+            version=version,
+            n_files=n_files,
+            n_bytes=n_bytes,
+            n_unsized=n_unsized,
+            nodes=nodes,
+        )
+
+    def intent(tallies=None, *, label="CMIP7", n_known=325):
+        """
+        Build what one requirement is about to fetch
+
+        `tallies=None` means one plausible dataset; `()` means nothing to fetch,
+        which `n_known` then distinguishes from nothing being known at all.
+        """
+        return DownloadIntent(
+            label=label,
+            tallies=(tally(),) if tallies is None else tuple(tallies),
+            n_known=n_known,
         )
 
     def group(records=(), *, label="CMIP7", **total_kwargs):
@@ -613,6 +673,8 @@ def download_scenes():
         skipped=skipped,
         totals=totals,
         held=held,
+        tally=tally,
+        intent=intent,
         group=group,
         root=DOWNLOAD_ROOT,
     )

@@ -143,7 +143,9 @@ ATTRIBUTES_READ: dict[str, tuple[str, ...]] = {
     ),
     "SearchRunLeafInfo": ("label", "failure", "n_documents", "n_matches"),
     "DownloadSummary": ("n_by_status", "n_total", "n_outstanding"),
-    "DownloadPlanItem": ("request",),
+    # Read by `local.downloads` to tally a plan by dataset version, which is what
+    # the 7am email's download table is built from.
+    "DownloadPlanItem": ("request", "dataset_version_id", "already_here"),
     # Read by `local.downloads.describe_results` to say which dataset a downloaded
     # file belongs to. A column renamed upstream would otherwise show up as a report
     # full of `-`, which reads as "ESGF published nothing" rather than as a bug.

@@ -100,10 +100,28 @@ make downloads-dry-run     # say what would be fetched, fetch nothing, email not
 
 ### Why there are two emails and not one
 
-The search report goes out the instant the search finishes, carrying the download
-plan: *"CMIP7: 12 file(s), 2.1 GB, into /data/azehrung/cmip-data"*. The download
-report follows whenever the fetching is done, which on a normal morning is seconds
-later and on the first run is hours.
+The search report goes out the instant the search finishes, carrying a table of what
+is about to be fetched — one row per dataset version, with its file count and size,
+and the running total in the heading:
+
+```text
+TO DOWNLOAD (CMIP7: 1 dataset, 3 files, 149.7 MB)
+  id   model         variant    grid  version   files      size
+  108  CanESM6-0-MR  r26i1p1f1  g150  20261103      3  149.7 MB
+  into /data/cmip7-scratch
+```
+
+It sits inside its own project's section, before that project's model-support table,
+because that table reads as the section's closing line and something actionable
+underneath it would be read last or not at all.
+
+The `id` is the same number the `ADDED` table shows, which is the point of it being
+there: a dataset that turned up overnight can be followed straight into the download
+table. And a total on its own is not much use — *"21.2 GB is coming"* does not say
+whether that is one model you were waiting for or forty you already had.
+
+The download report follows whenever the fetching is done, which on a normal morning
+is seconds later and on the first run is hours.
 
 That split is doing a specific job. One email after everything would be hostage to
 the download, and on a bulk morning would arrive long after you wanted the search
@@ -116,17 +134,45 @@ The second email is skipped when nothing was fetched and nothing failed
 (`EMAIL_WHEN_NOTHING_DOWNLOADED`), because the first one has already said there was
 nothing to do.
 
-## Running the daily download
+## The download half
 
-The second job. Where the search job finds out what exists, this one fetches the
-bytes.
+Where the search finds out what exists, this fetches the bytes. It runs in the same
+process, straight after the search report is emailed, and can also be run on its own:
 
 ```sh
-make run-downloads          # fetch, record, report, email
+make run-downloads-only     # fetch, record, report, email
 make downloads-dry-run      # say what it would fetch, and fetch nothing
 ```
 
-`run-downloads` will:
+It reports like this:
+
+```text
+pattern-effect-tas-mon-historical · CMIP7
+  325 file(s): 325 fetched, 0 already here, 0 failed
+  21.2 GB moved into /data/cmip7-scratch
+
+FETCHED (47 datasets, 325 files, 21.2 GB)
+  id  model          variant    grid  version   files      size  from
+  47  ACCESS-ESM1-6  r10i1p1f1  g115  20261009     18  123.0 MB  esgf.nci.org.au
+  ...
+```
+
+Titled by the **requirement**, not just the project: once two questions share a
+project, the project stops saying which one asked for the bytes.
+
+Both tables count **dataset versions, not files**, because a file is an arbitrary
+slice of one — CMIP7 publishes ACCESS-ESM1-6 as eighteen files per variant and
+CanESM6-0-MR as three, which says something about the publisher and nothing about
+the science. Failures are the exception and are listed per file, because there the
+particular file is the point. A dataset that half-arrived therefore appears in both
+tables, which is correct and is the thing you would want to notice.
+
+Two details that only show up when they matter: a `from` column reading
+`mixed (2 nodes)` when one dataset's files came from several mirrors, and a line
+saying how many files needed a fallback mirror at all. One node being down says
+nothing; all of them being down says a lot.
+
+`run-downloads-only` will:
 
 1. refuse to start unless `DOWNLOAD_ROOT` is set (see below);
 2. migrate the database, which is where the download tables come from;

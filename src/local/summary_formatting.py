@@ -926,6 +926,22 @@ class ReportGroup:
     results: tuple[EndpointResult, ...]
     """What each of its endpoints said, in the order to show them"""
 
+    appendix: str = ""
+    """
+    A rendered block to show after this group's own results, before its models
+
+    The seam for anything which belongs to this question but is not a search result
+    -- today, what is about to be downloaded. It arrives already rendered, and is
+    emitted verbatim, so this module needs to know nothing about downloading and
+    the caller needs no way to reach inside the report.
+
+    It goes *before* the model-support table on purpose. That table is a summary of
+    the whole group and reads as its closing line; something actionable underneath
+    it would be read last or not at all.
+
+    `''` renders nothing, not a blank section.
+    """
+
 
 def format_report(
     groups: Sequence[ReportGroup],
@@ -984,6 +1000,8 @@ def format_report(
                     of_group, coverage, title=group.label
                 ).splitlines()
             )
+            if group.appendix:
+                blocks.append(group.appendix.splitlines())
             blocks.append(models)
             continue
 
@@ -1014,6 +1032,9 @@ def format_report(
                     facets=facets,
                 )
             )
+
+        if group.appendix:
+            blocks.append(group.appendix.splitlines())
 
         blocks.append(models)
 

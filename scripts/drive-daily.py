@@ -8,6 +8,7 @@ import argparse
 import logging
 import sys
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,8 +28,8 @@ from local.download_formatting import (
 from local.downloads import (
     IDENTITY_FACETS,
     DownloadSettings,
+    describe_plan,
     describe_results,
-    intend,
     plan_only,
     run_downloads,
 )
@@ -48,6 +49,8 @@ from local.summary_formatting import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sqlalchemy.engine import Engine
 
     from local.downloads import DownloadIntent
@@ -320,15 +323,68 @@ def plan_everything(engine: Engine, root: Path) -> tuple[DownloadIntent, ...]:
     :
         One intent per requirement which downloads, in [REQUIREMENTS][] order
     """
-    return tuple(
-        intend(
-            tracked.label,
-            plan_only(engine, tracked.query, root),
-            # Everything we know of, fetched or not, so that "nothing to fetch" can
-            # say which kind of nothing it is.
-            n_known=len(plan_only(engine, tracked.query, root, skip_done=False)),
+    intents = []
+    for tracked in downloading():
+        # One pass, not two. `skip_done=False` returns every file we know of with
+        # `already_here` set on each, so this yields both "what is outstanding" and
+        # "how much exists at all" -- and the second is what lets an empty plan say
+        # whether we have everything or have simply never searched.
+        everything = plan_only(engine, tracked.query, root, skip_done=False)
+        outstanding = [item for item in everything if not item.already_here]
+        intents.append(
+            describe_plan(engine, tracked.label, outstanding, n_known=len(everything))
         )
-        for tracked in downloading()
+
+    return tuple(intents)
+
+
+def with_download_blocks(
+    groups: Sequence[ReportGroup],
+    intents: Sequence[DownloadIntent],
+    *,
+    root: Path | None,
+) -> tuple[ReportGroup, ...]:
+    """
+    Put each requirement's download plan inside its own section of the report
+
+    Matched by label, so a group with nothing to download is returned untouched and
+    a question which is only ever watched never grows a heading about downloading.
+
+    Parameters
+    ----------
+    groups
+        The search results, one group per requirement
+
+    intents
+        What each downloading requirement is about to fetch
+
+    root
+        Where the files would go. `None` when nothing downloads, in which case the
+        groups come back as they went in.
+
+    Returns
+    -------
+    :
+        The groups, with an appendix on the ones that have a plan
+    """
+    if root is None or not intents:
+        return tuple(groups)
+
+    by_label = {intent.label: intent for intent in intents}
+
+    return tuple(
+        replace(
+            group,
+            appendix=format_download_intent(
+                [by_label[group.label]],
+                root=root,
+                facets=IDENTITY_FACETS,
+                max_rows=MAX_ROWS,
+            ),
+        )
+        if group.label in by_label
+        else group
+        for group in groups
     )
 
 
@@ -357,7 +413,9 @@ def download_everything(engine: Engine, root: Path) -> tuple[DownloadGroup, ...]
 
         groups.append(
             DownloadGroup(
-                label=tracked.label,
+                # The requirement, not just its project: once two questions share a
+                # project, the project stops identifying which asked for the bytes.
+                label=f"{tracked.stem} \u00b7 {tracked.label}",
                 records=describe_results(engine, results),
                 totals=totals(results),
             )
@@ -425,7 +483,7 @@ def report_failure(what: str) -> None:
         logger.exception("Could not email the failure either")
 
 
-def main(argv: list[str] | None = None) -> None:  # noqa: PLR0912 - one branch per mode
+def main(argv: list[str] | None = None) -> None:
     """
     Search, report, download, report
 
@@ -474,7 +532,14 @@ def main(argv: list[str] | None = None) -> None:  # noqa: PLR0912 - one branch p
 
             return
 
-        print(format_download_intent(plan_everything(engine, root), root=root))
+        print(
+            format_download_intent(
+                plan_everything(engine, root),
+                root=root,
+                facets=IDENTITY_FACETS,
+                max_rows=MAX_ROWS,
+            )
+        )
 
         return
 
@@ -493,11 +558,10 @@ def main(argv: list[str] | None = None) -> None:  # noqa: PLR0912 - one branch p
 
         intents = plan_everything(engine, root) if root is not None else ()
         rendered = format_report(
-            groups, max_rows=MAX_ROWS, facets=PATTERN_EFFECT_FACETS
+            with_download_blocks(groups, intents, root=root),
+            max_rows=MAX_ROWS,
+            facets=PATTERN_EFFECT_FACETS,
         )
-        intent_block = format_download_intent(intents, root=root) if root else ""
-        if intent_block:
-            rendered = f"{rendered}\n{intent_block}\n"
 
         print(rendered)
 

@@ -4,13 +4,14 @@ Regression tests on what the morning email looks like, across all nine endpoints
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import PurePosixPath
 
 import pytest
 from esmporium.db import DatasetChangeType
 
 from local.download_formatting import format_download_intent
-from local.downloads import DownloadIntent
+from local.downloads import IDENTITY_FACETS, DatasetTally, DownloadIntent
 from local.summary_formatting import PATTERN_EFFECT_FACETS, format_report
 
 ADDED = DatasetChangeType.ADDED
@@ -112,20 +113,28 @@ def report(results, summary_scenes, intents=()):
     """
     Render the search email the way the job does, so the fixture is what gets mailed
 
-    Including the composition: the download plan is appended to the search report by
-    the driver, not by the renderer, so a fixture which only called `format_report`
-    would be a copy of something nobody receives.
+    Including the placement: each requirement's download plan rides inside its own
+    section, before its model-support table, as the driver puts it there. A fixture
+    which pasted the block at the end would be a copy of something nobody receives.
     """
-    rendered = format_report(
-        summary_scenes.groups(results, detailed=("CMIP7",)),
-        max_rows=50,
-        facets=PATTERN_EFFECT_FACETS,
+    groups = summary_scenes.groups(results, detailed=("CMIP7",))
+    by_label = {intent.label: intent for intent in intents}
+    groups = tuple(
+        replace(
+            group,
+            appendix=format_download_intent(
+                [by_label[group.label]],
+                root=DOWNLOAD_ROOT,
+                facets=IDENTITY_FACETS,
+                max_rows=50,
+            ),
+        )
+        if group.label in by_label
+        else group
+        for group in groups
     )
-    intent_block = format_download_intent(intents, root=DOWNLOAD_ROOT)
-    if intent_block:
-        rendered = f"{rendered}\n{intent_block}\n"
 
-    return rendered
+    return format_report(groups, max_rows=50, facets=PATTERN_EFFECT_FACETS)
 
 
 @pytest.fixture
@@ -297,9 +306,19 @@ def test_a_morning_with_something_to_download(
         intents=(
             DownloadIntent(
                 label="CMIP7",
-                n_files=2,
-                n_bytes=130691052,
-                n_unsized=0,
+                tallies=(
+                    DatasetTally(
+                        dataset_version_id=107,
+                        facets={
+                            "model": "CanESM6-0-MR",
+                            "variant_label": "r26i1p1f1",
+                            "grid_label": "g150",
+                        },
+                        version="20261018",
+                        n_files=2,
+                        n_bytes=130691052,
+                    ),
+                ),
                 n_known=327,
             ),
         ),
@@ -326,11 +345,7 @@ def test_a_morning_with_nothing_to_download(
             *cmip6_results,
         ],
         summary_scenes,
-        intents=(
-            DownloadIntent(
-                label="CMIP7", n_files=0, n_bytes=0, n_unsized=0, n_known=325
-            ),
-        ),
+        intents=(DownloadIntent(label="CMIP7", tallies=(), n_known=325),),
     )
 
     file_regression.check(rendered, extension=".txt")

@@ -35,6 +35,11 @@ CURRENT STATE (5 datasets)
 EAST vs WEST
   east and west agree, on all 5 datasets at the same versions
 
+TO DOWNLOAD (CMIP7: 1 dataset, 2 files, 124.6 MB)
+  id   model         variant    grid  version   files      size
+  107  CanESM6-0-MR  r26i1p1f1  g150  20261018      2  124.6 MB
+  into /data/cmip
+
 CMIP7  models with at least one satisfying variant
   model             east  west
   ACCESS-ESM1-6        1     1
@@ -69,7 +74,3 @@ CMIP6  models with at least one satisfying variant
   --------------------------------------------------------
   models satisfied    8     7    7     7     7     8     8
   8 models have at least one variant which satisfies the requirement
-
-About to download
-  CMIP7: 2 file(s), 124.6 MB
-  into /data/cmip

@@ -29,6 +29,9 @@ CURRENT STATE (4 datasets)
 EAST vs WEST
   east and west agree, on all 4 datasets at the same versions
 
+TO DOWNLOAD
+  nothing new; it is all already here
+
 CMIP7  models with at least one satisfying variant
   model             east  west
   ACCESS-ESM1-6        1     1
@@ -63,6 +66,3 @@ CMIP6  models with at least one satisfying variant
   --------------------------------------------------------
   models satisfied    8     7    7     7     7     8     8
   8 models have at least one variant which satisfies the requirement
-
-About to download
-  nothing new to fetch; it is all already here

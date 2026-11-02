@@ -1,17 +1,19 @@
-Subject: [2 FAILED] pattern-effect downloads: 1 fetched, 62.3 MB
+Subject: [2 FAILED] pattern-effect downloads: 2 fetched, 83.1 MB
 
-CMIP7 this run
-  4 file(s): 1 fetched, 1 already here, 2 failed, 2 for good
-  62.3 MB moved into /data/cmip
+pattern-effect-tas-mon-historical · CMIP7
+  5 file(s): 2 fetched, 1 already here, 2 failed, 2 for good
+  83.1 MB moved into /data/cmip
+  1 file needed a fallback mirror
 
-Fetched (1)
-  model        variant   grid  version   file                                                                                 size  from             after
-  UKESM1-3-LL  r1i1p1f2  g110  20261020  tas_tavg-h2m-hxy-u_mon_glb_g110_UKESM1-3-LL_historical_r1i1p1f2_185001-194912.nc  62.3 MB  esgf.ceda.ac.uk  1
+FETCHED (2 datasets, 2 files, 83.1 MB)
+  id   model        variant   grid  version   files     size  from
+  51   UKCM2a-0-HH  r1i1p1f1  g137  20260826      1  20.8 MB  esgf.nci.org.au
+  101  UKESM1-3-LL  r1i1p1f2  g110  20261020      1  62.3 MB  esgf.ceda.ac.uk
 
-Failed (2)
-  model           variant   grid  version   file                                                                                 tried  ended as
-  UKCM2a-0-HH     r1i1p1f1  g137  20260826  tas_tavg-h2m-hxy-u_mon_glb_g137_UKCM2a-0-HH_historical_r1i1p1f1_185001-194912.nc         1  needs credentials
-  CAS-ESM2-1-CSM  r1i1p1f1  g134  20260927  tas_tavg-h2m-hxy-u_mon_glb_g134_CAS-ESM2-1-CSM_historical_r1i1p1f1_185001-194912.nc      2  missing
+FAILED (2 files)
+  id  model           variant   grid  version   file                                                                                 tried  ended as
+  51  UKCM2a-0-HH     r1i1p1f1  g137  20260826  tas_tavg-h2m-hxy-u_mon_glb_g137_UKCM2a-0-HH_historical_r1i1p1f1_185001-194912.nc         1  needs credentials
+  52  CAS-ESM2-1-CSM  r1i1p1f1  g134  20260927  tas_tavg-h2m-hxy-u_mon_glb_g134_CAS-ESM2-1-CSM_historical_r1i1p1f1_185001-194912.nc      2  missing
 
 In the database
   325 file(s) (323 done, 2 given up)

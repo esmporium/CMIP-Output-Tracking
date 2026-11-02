@@ -1,6 +1,6 @@
 Subject: pattern-effect downloads: nothing new
 
-CMIP7 this run
+pattern-effect-tas-mon-historical · CMIP7
   0 file(s): 0 fetched, 0 already here, 0 failed
   0 B moved into /data/cmip
 
