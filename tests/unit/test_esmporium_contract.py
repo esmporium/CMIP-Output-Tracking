@@ -64,6 +64,9 @@ MODULE_LEVEL_NAMES: dict[str, tuple[str, ...]] = {
         "download_summary",
         "plan_downloads",
         "record_data_node_calls",
+        # What `local.node_health` summarises the recorded attempts with
+        "DataNodeHealth",
+        "aggregate_data_node_health",
         # The rows `local.downloads.describe_results` reads an identity back out of
         "Dataset",
         "DatasetVersion",
@@ -143,6 +146,25 @@ ATTRIBUTES_READ: dict[str, tuple[str, ...]] = {
     ),
     "SearchRunLeafInfo": ("label", "failure", "n_documents", "n_matches"),
     "DownloadSummary": ("n_by_status", "n_total", "n_outstanding"),
+    # Read by `local.node_health`. Note that `failure_rate` is listed but deliberately
+    # *not* read -- see `local.node_health.ok_rate` for why, and
+    # `tests/unit/test_node_health_formatting.py` for the tripwire on the upstream
+    # behaviour that makes it unusable.
+    "DataNodeHealth": (
+        "data_node",
+        "n_calls",
+        "n_success",
+        "n_judged",
+        "failure_rate",
+        "median_throughput_mb_per_s",
+        "total_bytes",
+        "n_blocked",
+        "n_timeout",
+        "n_host_fault",
+        "n_checksum_failed",
+        "n_missing",
+        "n_needs_credentials",
+    ),
     # Read by `local.downloads` to tally a plan by dataset version, which is what
     # the 7am email's download table is built from.
     "DownloadPlanItem": ("request", "dataset_version_id", "already_here"),

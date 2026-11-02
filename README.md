@@ -235,6 +235,83 @@ again, the same way, gets the same answer. If that shows up in the report, the f
 is an ESGF X.509 certificate passed as `httpx.Client(cert=...)`; that is the
 documented seam, and nothing else has to change to use it.
 
+### Which data nodes are actually serving us
+
+The download records every HTTP attempt it makes -- which node, which URL, how it
+answered, how many bytes moved, how long it took -- because `run_downloads` passes
+esmporium's `record_data_node_calls` as its observer. That is a row per *attempt*,
+not per file, so a file fetched on the third try from the second mirror left four of
+them.
+
+Nothing in the daily emails reads them yet. This prints them instead:
+
+```sh
+make data-node-health                      # everything we know
+make data-node-health ARGS="--days 7"      # how they are behaving lately
+```
+
+```text
+DATA NODE HEALTH (all history)
+  node                   attempts   ok  failed   ok%  MB/s   served
+  esgf.ceda.ac.uk              27   22       5   81%   4.4   1.3 GB
+      5 refused us (403, 429 or 503)
+  esgf.nci.org.au             302  300       2   99%  18.5  18.2 GB
+      2 timed out
+  crd-esgf-drc.ec.gc.ca         9    0       0     -     -      0 B
+      9 had nothing there (404), which is not the node's fault
+
+  3 nodes, 338 attempts, 19.5 GB served
+```
+
+Worst first, rather than alphabetically like every other table here: the reason to
+open this is to find out whether a node has gone bad, and in a list of nine the one
+that has should not be eighth. Ties -- which on a clean run is every row -- break on
+how much we asked of the node.
+
+It is read-only and deliberately does **not** migrate the database, unlike every
+other entry point, so it is safe to point at a copy of the production one. It has to
+run on the machine that downloaded, though: `dbs/` is git-ignored, so a clone has the
+table and none of the rows.
+
+Three things to know before quoting the numbers at anybody.
+
+**`failed` is narrower than it sounds, and `ok%` is ours.** A 404 means a route we
+recorded has gone away, a 401 means we did not present credentials, and a size
+mismatch means the *index* published the wrong size: in all three the node answered
+us correctly, and esmporium excludes them from its health on purpose. They are still
+counted, on the explanation lines under each row, which is why `attempts` is not
+`ok + failed`.
+
+The percentage is computed in `local.node_health.ok_rate` rather than read off
+`DataNodeHealth.failure_rate`, because that field does not currently mean what its
+docstring says: `n_judged` leaves successes out, and `_summarise` then divides by it,
+so `failure_rate` can only ever come out as exactly `0.0` or `1.0`. A node that
+succeeded nineteen times in twenty reports `1.0`. `n_success` and `n_judged` are each
+sound on their own, so the rate is built from those two instead, and
+`tests/unit/test_node_health_formatting.py` pins the upstream behaviour it relies on
+so that a fix fails a test rather than silently halving every number.
+
+**A node absent from the table is one we have never fetched from, not a healthy one.**
+"We have no evidence" stays distinguishable from "we tried and it failed" throughout,
+which is also why a node whose every attempt was a 404 shows `-` for `ok%` instead of
+0% or 100%.
+
+**These are the data nodes, not the search endpoints.** An index node and a data node
+are different machines doing different jobs, and being good at one says nothing about
+being good at the other -- a search is judged on latency, a download on throughput.
+Nothing here says whether `search.east.esgf.io` is answering; the per-endpoint table
+in the morning email is what covers that.
+
+### The health is recorded but not yet used to choose a node
+
+Worth knowing, because it looks from the above as though it must be. `run_downloads`
+calls esmporium's `download` without a `selector`, so route order is whatever ESGF
+published rather than what we have learnt. esmporium ships
+`build_refreshing_data_node_health_selector`, which ranks reliability first and
+throughput second and re-reads every few hours so that a multi-day run does not keep
+using Monday's opinion on Thursday. Turning it on is a one-line change, and the
+feedback loop it needs -- the observer -- is already wired up.
+
 ### Which Python it runs on
 
 `.python-version` pins the interpreter to 3.13, and unlike most projects **that
@@ -652,6 +729,7 @@ Python files, notebooks etc. out in any way you wish. As it stands:
 ```
 scripts/drive-daily.py            the whole job, and all of its configuration
 scripts/run-daily.sh              cron wrapper around the above
+scripts/data-node-health.py       a read-only report on how the data nodes behave
 src/local/                        the local package, shared helpers
 src/local/endpoints.py            a tracked requirement, and asking one endpoint
 src/local/database.py             opening and migrating the database
@@ -659,6 +737,7 @@ src/local/notifications.py        the mechanics of sending an email
 src/local/downloads.py            where downloads go, and what came of one
 src/local/summary_formatting.py   how the search report is laid out
 src/local/download_formatting.py  how a download run is laid out
+src/local/node_health.py          how the data node report is laid out
 tests/conftest.py                 builders for summaries and download runs, so no
                                   test needs a database or a network
 tests/regression/                 checked-in copies of both emails

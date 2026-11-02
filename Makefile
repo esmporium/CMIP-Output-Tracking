@@ -72,6 +72,13 @@ run-search-only:  ## search, update the database and email what changed; downloa
 run-downloads-only:  ## download what the last search found, without searching again
 	uv run python scripts/drive-daily.py --download-only
 
+.PHONY: data-node-health
+data-node-health:  ## summarise how the ESGF data nodes have served us, from what the downloads recorded
+	# Read-only, and writes no mail. Run it on the machine that did the
+	# downloading: `dbs/` is git-ignored, so a clone has the table and no rows.
+	# `ARGS="--days 7"` narrows it to how the nodes are behaving lately.
+	uv run python scripts/data-node-health.py $(ARGS)
+
 .PHONY: downloads-dry-run
 downloads-dry-run:  ## say how many files and how many bytes a download would fetch, and fetch nothing
 	uv run python scripts/drive-daily.py --dry-run
