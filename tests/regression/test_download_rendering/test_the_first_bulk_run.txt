@@ -1,6 +1,6 @@
 Subject: pattern-effect downloads: 25 fetched, 249.3 MB
 
-pattern-effect-tas-mon-historical · CMIP7
+pattern-effect-tas-mon-historical · CMIP7 tas
   25 file(s): 25 fetched, 0 already here, 0 failed
   249.3 MB moved into /data/cmip
 

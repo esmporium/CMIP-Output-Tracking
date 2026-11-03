@@ -1,4 +1,4 @@
-CMIP7  east (search.east.esgf.io)
+CMIP7 tas  east (search.east.esgf.io)
 pattern-effect-cmip7-east: 1 added
 
 run 7, newest started 2026-10-20 06:02 UTC
@@ -18,7 +18,7 @@ RUN HEALTH
 
 CURRENT STATE (5 datasets)
 
-CMIP7  west (search.west.esgf.io)
+CMIP7 tas  west (search.west.esgf.io)
 pattern-effect-cmip7-west: no changes
 
 run 7, newest started 2026-10-20 06:02 UTC
@@ -35,12 +35,12 @@ CURRENT STATE (5 datasets)
 EAST vs WEST
   east and west agree, on all 5 datasets at the same versions
 
-TO DOWNLOAD (CMIP7: 1 dataset, 2 files, 124.6 MB)
+TO DOWNLOAD (CMIP7 tas: 1 dataset, 2 files, 124.6 MB)
   id   model         variant    grid  version   files      size
   107  CanESM6-0-MR  r26i1p1f1  g150  20261018      2  124.6 MB
   into /data/cmip
 
-CMIP7  models with at least one satisfying variant
+CMIP7 tas  models with at least one satisfying variant
   model             east  west
   ACCESS-ESM1-6        1     1
   CanESM6-0-MR         3     3
@@ -49,7 +49,7 @@ CMIP7  models with at least one satisfying variant
   models satisfied     3     3
   3 models have at least one variant which satisfies the requirement
 
-CMIP6 (7 of 7 answered; 1030 datasets at newest usable version)
+CMIP6 tas (7 of 7 answered; 1030 datasets at newest usable version)
   endpoint  host                 current  stale  absent  vs last run
   nsc       esg-dn1.nsc.liu.se      1030      0       0  no changes
   ornl      esgf-node.ornl.gov       901      2     127  no changes
@@ -61,7 +61,7 @@ CMIP6 (7 of 7 answered; 1030 datasets at newest usable version)
   nsc alone holds the newest version of all 1030
   11 datasets served at different versions; nsc has the newest of 11
 
-CMIP6  models with at least one satisfying variant
+CMIP6 tas  models with at least one satisfying variant
   model             nsc  ornl  nci  dkrz  ceda  east  west
   ACCESS-CM2        145   129  115   104   104    66    66
   CanESM5           145   129  115   104   104    66    66

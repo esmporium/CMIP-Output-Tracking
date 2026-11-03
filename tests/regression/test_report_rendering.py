@@ -12,7 +12,11 @@ from esmporium.db import DatasetChangeType
 
 from local.download_formatting import format_download_intent
 from local.downloads import IDENTITY_FACETS, DatasetTally, DownloadIntent
-from local.summary_formatting import PATTERN_EFFECT_FACETS, format_report
+from local.summary_formatting import (
+    PATTERN_EFFECT_FACETS,
+    ReportGroup,
+    format_report,
+)
 
 ADDED = DatasetChangeType.ADDED
 REMOVED = DatasetChangeType.REMOVED
@@ -109,6 +113,49 @@ A `PurePosixPath` so the checked-in copy renders identically whoever runs the te
 """
 
 
+TAS_LABELS = {"CMIP7": "CMIP7 tas", "CMIP6": "CMIP6 tas"}
+"""
+What the driver calls the two `tas` groups
+
+Not just `"CMIP7"` and `"CMIP6"` any more: CMIP7 is asked two questions now, so the
+project alone no longer says which one a group is. A checked-in copy of the email
+should carry the headings that really go out.
+"""
+
+SST_LABEL = "CMIP7 tos"
+"""What the driver calls the `tos` group"""
+
+
+def render(groups):
+    """Render pre-built groups the way the job does."""
+    return format_report(groups, max_rows=50, facets=PATTERN_EFFECT_FACETS)
+
+
+def with_plans(groups, intents):
+    """
+    Hang each group's download plan inside its own section
+
+    The same matching `drive-daily.with_download_blocks` does, and by label for the
+    same reason -- which is also why the driver's labels have to be distinct.
+    """
+    by_label = {intent.label: intent for intent in intents}
+
+    return tuple(
+        replace(
+            group,
+            appendix=format_download_intent(
+                [by_label[group.label]],
+                root=DOWNLOAD_ROOT,
+                facets=IDENTITY_FACETS,
+                max_rows=50,
+            ),
+        )
+        if group.label in by_label
+        else group
+        for group in groups
+    )
+
+
 def report(results, summary_scenes, intents=()):
     """
     Render the search email the way the job does, so the fixture is what gets mailed
@@ -117,7 +164,9 @@ def report(results, summary_scenes, intents=()):
     section, before its model-support table, as the driver puts it there. A fixture
     which pasted the block at the end would be a copy of something nobody receives.
     """
-    groups = summary_scenes.groups(results, detailed=("CMIP7",))
+    groups = summary_scenes.groups(
+        results, detailed=(TAS_LABELS["CMIP7"],), labels=TAS_LABELS
+    )
     by_label = {intent.label: intent for intent in intents}
     groups = tuple(
         replace(
@@ -305,7 +354,7 @@ def test_a_morning_with_something_to_download(
         summary_scenes,
         intents=(
             DownloadIntent(
-                label="CMIP7",
+                label=TAS_LABELS["CMIP7"],
                 tallies=(
                     DatasetTally(
                         dataset_version_id=107,
@@ -322,6 +371,134 @@ def test_a_morning_with_something_to_download(
                 n_known=327,
             ),
         ),
+    )
+
+    file_regression.check(rendered, extension=".txt")
+
+
+@pytest.fixture
+def cmip7_sst_datasets(summary_scenes):
+    """
+    Get the CMIP7 `tos` datasets, as a run saw them
+
+    The same models as `cmip7_datasets`, on their ocean grids rather than their
+    atmosphere ones -- `g118`/`g147`/`g126` against `g115`/`g150`/`g110`. That is what
+    the second question looks like in a table, and it is the reason both questions can
+    sit in one email without a reader having to be told which is which.
+
+    One data node each, which is real and is the point: every CMIP7 `tos` dataset
+    version is published to exactly one node, so ranking nodes by health has nothing
+    to choose between for this question. Which node follows which institution ran the
+    model, hence NCI, Environment Canada and CEDA. Measured 2026-11-03.
+    """
+    return (
+        summary_scenes.version(
+            "ACCESS-ESM1-6",
+            "historical",
+            "r1i1p1f1",
+            201,
+            grid_label="g118",
+            variable="tos",
+            data_nodes=("esgf.nci.org.au",),
+        ),
+        summary_scenes.version(
+            "CanESM6-0-MR",
+            "historical",
+            "r1i1p1f1",
+            202,
+            grid_label="g147",
+            variable="tos",
+            data_nodes=("crd-esgf-drc.ec.gc.ca",),
+        ),
+        summary_scenes.version(
+            "UKESM1-3-LL",
+            "historical",
+            "r1i1p1f2",
+            203,
+            grid_label="g126",
+            variable="tos",
+            data_nodes=("ceda.ac.uk",),
+        ),
+    )
+
+
+def test_both_cmip7_questions(
+    file_regression, summary_scenes, cmip7_datasets, cmip7_sst_datasets, cmip6_results
+):
+    """
+    The morning `tos` was added: three groups in one email
+
+    The layout question this is here to answer. Two of the three groups are CMIP7,
+    so the headings are the only thing telling a reader which bytes belong to which
+    question -- and each group gets its own coverage, its own model table and its own
+    download plan, because a tag like `east` identifies an endpoint only within one
+    question.
+
+    `tas` is quiet and `tos` arrives whole, which is the real shape of the morning:
+    one question has been running for weeks and the other has just been asked for
+    the first time. Note `tos` reporting a first run rather than 43 additions -- a
+    new question has no baseline to have changed against.
+
+    Built by hand rather than through `summary_scenes.groups`, which groups by
+    project and would therefore fold the two CMIP7 questions into one. That folding
+    is exactly what `ReportGroup` exists to prevent, so a fixture which went through
+    it would be a copy of the bug rather than of the email.
+    """
+    groups = (
+        ReportGroup(
+            label=TAS_LABELS["CMIP7"],
+            detailed=True,
+            results=(
+                summary_scenes.result("east", current=cmip7_datasets),
+                summary_scenes.result("west", current=cmip7_datasets),
+            ),
+        ),
+        *summary_scenes.groups(cmip6_results, labels=TAS_LABELS),
+        ReportGroup(
+            label=SST_LABEL,
+            detailed=True,
+            results=tuple(
+                summary_scenes.result(
+                    tag,
+                    requirement_name=f"pattern-effect-sst-cmip7-{tag}",
+                    current=cmip7_sst_datasets,
+                    changes=tuple(
+                        summary_scenes.change(ADDED, of=each)
+                        for each in cmip7_sst_datasets
+                    ),
+                    baseline_run_id=None,
+                    window_runs=(7,),
+                )
+                for tag in ("east", "west")
+            ),
+        ),
+    )
+    rendered = render(
+        with_plans(
+            groups,
+            (
+                DownloadIntent(label=TAS_LABELS["CMIP7"], tallies=(), n_known=325),
+                DownloadIntent(
+                    label=SST_LABEL,
+                    tallies=tuple(
+                        DatasetTally(
+                            dataset_version_id=each.dataset_version_id,
+                            facets={
+                                "model": each.facets["model"],
+                                "variant_label": each.facets["variant_label"],
+                                "grid_label": each.facets["grid_label"],
+                            },
+                            version=each.version,
+                            n_files=n_files,
+                            n_bytes=n_files * 68100000,
+                        )
+                        for each, n_files in zip(cmip7_sst_datasets, (6, 3, 2))
+                    ),
+                    # Nothing fetched yet, so everything known is outstanding.
+                    n_known=11,
+                ),
+            ),
+        )
     )
 
     file_regression.check(rendered, extension=".txt")
@@ -345,7 +522,7 @@ def test_a_morning_with_nothing_to_download(
             *cmip6_results,
         ],
         summary_scenes,
-        intents=(DownloadIntent(label="CMIP7", tallies=(), n_known=325),),
+        intents=(DownloadIntent(label=TAS_LABELS["CMIP7"], tallies=(), n_known=325),),
     )
 
     file_regression.check(rendered, extension=".txt")

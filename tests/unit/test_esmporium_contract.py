@@ -77,6 +77,10 @@ MODULE_LEVEL_NAMES: dict[str, tuple[str, ...]] = {
     ),
     "esmporium.db.migrate": ("upgrade_to_head",),
     "esmporium.downloads": (
+        # How hard it is polite to lean on one data node at once. Imported rather
+        # than copied, so `local.downloads.run_downloads` defaults to esmporium's
+        # judgement instead of to a number of ours that could drift from it.
+        "DEFAULT_PER_DATA_NODE",
         # The result types the download report is a pure function of
         "DownloadRequest",
         "DownloadResult",
@@ -395,3 +399,29 @@ def test_a_download_is_still_planned_from_the_same_query_a_search_takes():
     parameters = inspect.signature(esmporium.db.download).parameters
 
     assert list(parameters)[:3] == ["engine", "query", "root"]
+
+
+@pytest.mark.parametrize(
+    "parameter", ["max_workers", "per_data_node", "requeue_passes"]
+)
+def test_a_download_can_still_be_told_to_fetch_several_files_at_once(parameter):
+    # `local.downloads.run_downloads` passes the first two by name, and relies on the
+    # third's default. A rename upstream would otherwise surface as a `TypeError` at
+    # the moment the download starts -- which is after the morning search mail has
+    # already gone out saying the download was about to begin, so the symptom is a
+    # download report that simply never arrives.
+    parameters = inspect.signature(esmporium.db.download).parameters
+
+    assert parameter in parameters, (
+        f"esmporium's download() no longer takes {parameter!r}, which "
+        "local.downloads.run_downloads relies on to fetch files in parallel. "
+        "Find what replaced it and update both together."
+    )
+
+
+def test_the_per_data_node_default_is_still_a_number_we_can_pace_a_run_with():
+    # We restate this value in `drive-daily.py` so that a politeness decision about
+    # other people's servers is visible in the configuration block. That restatement
+    # is only honest if the thing it claims to restate is still a plain count.
+    assert isinstance(esmporium.downloads.DEFAULT_PER_DATA_NODE, int)
+    assert esmporium.downloads.DEFAULT_PER_DATA_NODE >= 1

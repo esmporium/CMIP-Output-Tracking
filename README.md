@@ -105,15 +105,21 @@ is about to be fetched — one row per dataset version, with its file count and 
 and the running total in the heading:
 
 ```text
-TO DOWNLOAD (CMIP7: 1 dataset, 3 files, 149.7 MB)
+TO DOWNLOAD (CMIP7 tas: 1 dataset, 3 files, 149.7 MB)
   id   model         variant    grid  version   files      size
   108  CanESM6-0-MR  r26i1p1f1  g150  20261103      3  149.7 MB
   into /data/cmip7-scratch
 ```
 
-It sits inside its own project's section, before that project's model-support table,
-because that table reads as the section's closing line and something actionable
-underneath it would be read last or not at all.
+It sits inside its own question's section, before that question's model-support
+table, because that table reads as the section's closing line and something
+actionable underneath it would be read last or not at all.
+
+Both emails are subject-lined `pattern-effect: ...` — the job's name, not any one
+question's. There are three questions now and a subject built from one of their
+stems would read as a mail about `tas` on a morning when only `tos` moved. The
+constant is `SUBJECT_STEM`; **it is what a mail filter matches on**, so changing it
+is a thing to go and fix in Gmail too.
 
 The `id` is the same number the `ADDED` table shows, which is the point of it being
 there: a dataset that turned up overnight can be followed straight into the download
@@ -147,18 +153,28 @@ make downloads-dry-run      # say what it would fetch, and fetch nothing
 It reports like this:
 
 ```text
-pattern-effect-tas-mon-historical · CMIP7
-  325 file(s): 325 fetched, 0 already here, 0 failed
-  21.2 GB moved into /data/cmip7-scratch
+pattern-effect-tas-mon-historical · CMIP7 tas
+  0 file(s): 0 fetched, 0 already here, 0 failed
+  0 B moved into /data/cmip7-scratch
 
-FETCHED (47 datasets, 325 files, 21.2 GB)
-  id  model          variant    grid  version   files      size  from
-  47  ACCESS-ESM1-6  r10i1p1f1  g115  20261009     18  123.0 MB  esgf.nci.org.au
+pattern-effect-sst-mon-historical · CMIP7 tos
+  270 file(s): 270 fetched, 0 already here, 0 failed
+  18.4 GB moved into /data/cmip7-scratch
+
+FETCHED (43 datasets, 270 files, 18.4 GB)
+  id   model          variant    grid  version   files      size  from
+  201  ACCESS-ESM1-6  r10i1p1f1  g147  20261009      6  408.6 MB  crd-esgf-drc.ec.gc.ca
   ...
 ```
 
-Titled by the **requirement**, not just the project: once two questions share a
-project, the project stops saying which one asked for the bytes.
+Titled by the **requirement**, not just the project: two questions now share CMIP7,
+so the project alone no longer says which one asked for the bytes. The quiet one is
+still listed rather than left out, because an absent block cannot be told from a
+block that fell over.
+
+The `In the database` figures at the end are for the whole database, not per
+question — they answer "is anything stuck anywhere", which is not a per-question
+thing.
 
 Both tables count **dataset versions, not files**, because a file is an arbitrary
 slice of one — CMIP7 publishes ACCESS-ESM1-6 as eighteen files per variant and
@@ -202,10 +218,26 @@ Being interrupted is therefore safe, and so is running it twice. Each file is
 recorded in its own transaction as it finishes, so a run killed on day two keeps
 everything from day one, and a part-downloaded file is resumed rather than restarted.
 
-### Which projects it fetches
+### Which questions it fetches
 
-`download=True` on a `TrackedRequirement` in `scripts/drive-daily.py`. Today that
-is CMIP7 and only CMIP7.
+`download=True` on a `TrackedRequirement` in `scripts/drive-daily.py`. Today that is
+**both CMIP7 questions** — `tas` and `tos` — and neither CMIP6 one.
+
+| question | variable | branded as | how much, at east | |
+| --- | --- | --- | --- | --- |
+| CMIP7 `tas` | `tas` | `tavg-h2m-hxy-u` | 47 datasets, 325 files, 22.7 GB | fetched |
+| CMIP7 `tos` | `tos` | `tavg-u-hxy-sea` | 43 datasets, 270 files, 18.4 GB | fetched |
+| CMIP6 `tas` | `tas` | `Amon` | ~1140 dataset versions | watched |
+
+(Measured against the live archive on 2026-11-03.)
+
+Both CMIP7 questions download into the same `DOWNLOAD_ROOT`. Nothing has to be done
+to keep them apart: esmporium's layout puts a file under its own dataset id, and the
+variable is part of that, so the two never collide and `make data-node-health`
+covers both at once.
+
+**`tos` is the lighter of the two, which was not the expectation going in.** Each
+file is within a per-cent of a `tas` file's size; there are simply fewer of them.
 
 Searching and downloading are not the same appetite: we watch CMIP6 across seven
 endpoints to see what exists, and we have no intention of pulling all of it onto
@@ -226,7 +258,7 @@ waiting on the esmporium side, and it is why this stays off rather than being
 
 ### Credentials
 
-Downloads are anonymous, and that is enough for CMIP7 `tas` today.
+Downloads are anonymous, and that is enough for both CMIP7 questions today.
 
 esmporium fetches with an `httpx` client that the caller supplies, and we supply
 none, so it builds an anonymous one. A node which refuses an anonymous request
@@ -331,6 +363,39 @@ being good at the other -- a search is judged on latency, a download on throughp
 Nothing here says whether `search.east.esgf.io` is answering; the per-endpoint table
 in the morning email is what covers that.
 
+### Several files at once, and why there is a cap per node
+
+A run fetches `DOWNLOAD_WORKERS` files at a time (8), but **no more than
+`PER_DATA_NODE` of them against any one data node** (4). Both are constants at the
+top of `scripts/drive-daily.py`.
+
+The cap is the part that matters, and it is not about our bandwidth. Most files have
+exactly one node serving them, so an uncapped pool of workers becomes a pile of
+simultaneous requests against a single host — which is how a node starts refusing
+us, and these are other people's institutions' servers. A node that refuses records
+`blocked` attempts, which `make data-node-health` reports; that is the number to
+look at before raising anything here.
+
+Two properties worth knowing:
+
+- a worker whose file's best node is already at the cap **waits for a slot** rather
+  than being sent to a node ranked lower. So the cap paces a run and never silently
+  changes which node served us.
+- a file that failed for a reason that might not recur gets one more go before the
+  run ends. Files whose every route is gone, or needs credentials, are not retried —
+  nothing about them will have changed.
+
+`DOWNLOAD_WORKERS` is a ceiling, not a promise. CMIP7 `tos` is spread over four data
+nodes (`crd-esgf-drc.ec.gc.ca` holds 25 of its 43 dataset versions, `esgf.nci.org.au`
+10, `ceda.ac.uk` 7, `esg-earthlab.iap.ac.cn` 1), so eight workers can keep every node
+busy; a question concentrated on one host would move four at a time whatever the
+number says.
+
+**This is also why `tos` was a good first case for it.** Every `tos` dataset version
+is published to exactly one node, so there is nothing for node *ranking* to choose
+between — but the requirement as a whole is spread across four, so there is plenty
+for node *parallelism* to do.
+
 ### The health is recorded but not yet used to choose a node
 
 Worth knowing, because it looks from the above as though it must be. `run_downloads`
@@ -402,7 +467,8 @@ netCDF, or a full disk on whichever volume the repository happens to sit on.
 `DownloadSettings.from_env()` raises `MissingDownloadSettingError` naming the
 variable, which is the message you want when you are reading it out of a cron log.
 
-Check there is room before the first run. It is 21 GB today:
+Check there is room before the first run. It is ~41 GB today, across both CMIP7
+questions:
 
 ```sh
 df -h /data
@@ -482,9 +548,11 @@ make run-search-only
 df -h /data
 make downloads-dry-run
 
-# 4. The initial download. 21 GB over a few hours the first time; a handful of
-#    files, in seconds, every time after. Run it under `tmux` -- it is resumable,
-#    so losing the ssh session is survivable, but there is no reason to find out.
+# 4. The initial download. ~41 GB over a few hours the first time (22.7 GB of
+#    `tas` and 18.4 GB of `tos`); a handful of files, in seconds, every time
+#    after. Eight files move at once, capped at four per data node. Run it under
+#    `tmux` -- it is resumable, so losing the ssh session is survivable, but there
+#    is no reason to find out.
 tmux new -s download
 make run-downloads-only          # detach with ctrl-b then d
 
@@ -584,10 +652,10 @@ search and the download are handed the same object.
 The requirement's **name** is the key its whole history hangs off: it is what the
 database files the search under, and what the summary is read back out by.
 esmporium deliberately refuses to let a search change meaning without changing
-name, so if you edit the query you must either change `SEARCH_STEM` or bump
-`DB_VERSION_ID` to start a fresh database. If you do not, the next run will stop
-with a `RequirementNameInUseError` rather than quietly comparing apples with
-oranges.
+name, so if you edit the query you must either change that requirement's stem
+(`TAS_STEM` or `SST_STEM`) or bump `DB_VERSION_ID` to start a fresh database. If you
+do not, the next run will stop with a `RequirementNameInUseError` rather than
+quietly comparing apples with oranges.
 
 Run `make downloads-dry-run` after widening anything. A query that matches more
 than you expected is a search that reports a longer table and a download that
@@ -600,6 +668,51 @@ variable=("tas", "pr"),
 ```
 
 This still changes the requirement's meaning, so it still needs a new name.
+
+### Add a whole new question
+
+Adding another `TrackedRequirement` to `REQUIREMENTS`, which is a cheaper change
+than editing an existing one: a new name is a new history, so nothing has to be
+reset and `DB_VERSION_ID` stays where it is. The search loop, the download loop,
+both emails and both reports all iterate that list, so nothing else has to learn
+about it. CMIP7 `tos` was added this way on 2026-11-03.
+
+Four things to get right, all of which have a test to catch them:
+
+1. **Its own stem.** A new question means a new `*_STEM` constant. Sharing one with
+   an existing question would file both under the same requirement name, and
+   esmporium would refuse the second as a name already in use.
+2. **A distinct `label`.** The download plan is matched back to its search results
+   by label, so two requirements sharing one quietly drops a download block out of
+   the morning email, with nothing raised and nothing logged. Both CMIP7 questions
+   would naturally have been labelled `"CMIP7"`; they are `"CMIP7 tas"` and
+   `"CMIP7 tos"` because of this.
+3. **The right branded-variable suffix.** CMIP7 `processing_id` values are easy to
+   get nearly right. Monthly `tos` is published both as `tavg-u-hxy-sea` (the
+   gridded field, which is what we want) and `tavg-u-hm-sea` (its zonal mean, which
+   is a different quantity under the same variable name). A query naming neither
+   fetches both and reports them as one requirement. Check against the live archive
+   rather than guessing.
+4. **A first download done by hand.** See below.
+
+Then `make test`, which will fail in `tests/unit/test_driver_config.py` until the
+new requirement's stored names are written down there — that file is the record of
+what the server's database already contains, so adding to it is the step that says
+"these names are new, and the old ones are untouched".
+
+#### The first run of a new question
+
+A new question's first download is its whole archive — 18.4 GB for `tos`. Do that
+one by hand rather than letting cron find it:
+
+```sh
+make downloads-dry-run      # how big is it, and can the disk take it
+tmux new -s download
+make run-downloads-only     # resumable, but there is no reason to find out
+```
+
+Leaving it to the scheduled run is safe but makes the download email as late as the
+download is long, after the search mail has already gone out saying it was starting.
 
 ### Change what the email looks like
 
@@ -692,8 +805,8 @@ the schema itself, on every run.
 Bumping it leaves the old database on disk, so nothing is thrown away.
 
 **Bumping it now costs more than it used to.** The database is what remembers which
-files we already have, so a fresh one does not know about 21 GB of netCDF sitting
-under `DOWNLOAD_ROOT`. The next download run would re-fetch all of it. If you do
+files we already have, so a fresh one does not know about the ~41 GB of netCDF
+sitting under `DOWNLOAD_ROOT`. The next download run would re-fetch all of it. If you do
 need to bump it, either point `DOWNLOAD_ROOT` somewhere new as well, or expect the
 first download against the new database to be the bulk run again.
 
@@ -709,7 +822,11 @@ which for CMIP7 comes out as:
 
 ```text
 MIP-DRS7/CMIP7/CMIP/UKNCSP/UKESM1-3-LL/historical/r2i1p1f2/glb/mon/tas/tavg-h2m-hxy-u/g110/v20261020/tas_...nc
+MIP-DRS7/CMIP7/CMIP/UKNCSP/UKESM1-3-LL/historical/r2i1p1f2/glb/mon/tos/tavg-u-hxy-sea/g126/v20261020/tos_...nc
 ```
+
+The variable and its branding are both in the path, which is why both CMIP7
+questions can share one `DOWNLOAD_ROOT` with nothing done to keep them apart.
 
 This is DRS-*shaped* — navigable by eye, sorts the way a climate scientist expects —
 but it is **esmporium's own layout and not any project's real DRS**, deliberately.
@@ -724,7 +841,7 @@ Two consequences worth knowing:
   it already has. Moving a file means fetching it again.
 - `tests/unit/test_esmporium_contract.py` pins the layout as a *path*, not as a
   name, for the same reason: if esmporium ever changes it, we find out from a test
-  rather than from a 21 GB re-download.
+  rather than from a ~41 GB re-download.
 
 ## Development
 
@@ -771,6 +888,8 @@ tests/conftest.py                 builders for summaries and download runs, so n
                                   test needs a database or a network
 tests/regression/                 checked-in copies of both emails
 tests/unit/                       the invariants, and the esmporium contract
+tests/unit/test_driver_config.py  what the one job we really run is pointed at
+tests/unit/test_download_pacing.py   that the worker settings reach esmporium
 dbs/                              SQLite databases (not committed)
 logs/                             output from the cron job (not committed)
 ```

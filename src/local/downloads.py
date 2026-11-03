@@ -21,6 +21,7 @@ from esmporium.db import (
     plan_downloads,
     record_data_node_calls,
 )
+from esmporium.downloads import DEFAULT_PER_DATA_NODE
 from sqlmodel import Session, col, select
 
 if TYPE_CHECKING:
@@ -472,7 +473,12 @@ def plan_only(
 
 
 def run_downloads(
-    engine: Engine, query: QueryProtocol, root: Path
+    engine: Engine,
+    query: QueryProtocol,
+    root: Path,
+    *,
+    max_workers: int | None = None,
+    per_data_node: int | None = DEFAULT_PER_DATA_NODE,
 ) -> tuple[DownloadResult, ...]:
     """
     Download everything `query` asks for which we have not already got
@@ -499,10 +505,33 @@ def run_downloads(
     root
         The directory to download into
 
+    max_workers
+        How many files to fetch at once. `None`, the default, fetches them one after
+        another.
+
+        A ceiling rather than a promise, and `per_data_node` is why: a requirement
+        whose files all live on one node moves `per_data_node` of them at a time
+        however high this is set. See
+        [esmporium.downloads.download_files][].
+
+    per_data_node
+        The most transfers to run at once against any one data node.
+
+        Defaults to esmporium's own
+        [DEFAULT_PER_DATA_NODE][esmporium.downloads.DEFAULT_PER_DATA_NODE] rather
+        than a number of our own, so that "how hard is it polite to lean on one
+        archive" stays one judgement made in one place upstream.
+
+        Worth understanding before raising it: a worker whose file's best node is
+        already at its limit **waits for a slot** rather than being sent to a node
+        the selector ranked lower. So this paces a run, and never quietly changes
+        which node served us. `None` removes the limit, which is a way to get a data
+        node to start refusing us.
+
     Returns
     -------
     :
-        One result per file attempted, in the order they were attempted
+        One result per file attempted, in the order they were planned
 
         Files already on disk are not attempted and so are not here.
     """
@@ -511,6 +540,8 @@ def run_downloads(
         query,
         root,
         observer=record_data_node_calls(engine),
+        max_workers=max_workers,
+        per_data_node=per_data_node,
     )
 
 

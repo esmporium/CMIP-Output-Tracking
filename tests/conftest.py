@@ -256,33 +256,67 @@ def summary_scenes():
             ),
         )
 
+        # Shortened from the real thing, which carries the variable, frequency and
+        # experiment too (`pattern-effect-tas-mon-historical-cmip7-east`). Overridable
+        # because once two questions share a project this no longer tells them apart,
+        # and a fixture showing two groups under one requirement name would read as a
+        # bug in the thing the groups exist to prevent.
+        summary_kwargs.setdefault(
+            "requirement_name", f"pattern-effect-{project.lower()}-{tag}"
+        )
+
         return EndpointResult(
             endpoint=where,
-            summary=summary(
-                requirement_name=f"pattern-effect-{project.lower()}-{tag}",
-                **summary_kwargs,
-            ),
+            summary=summary(**summary_kwargs),
             failure=None,
         )
 
-    def groups(results, *, detailed=()):
+    def groups(results, *, detailed=(), labels=None):
         """
-        Group results for the renderer, keyed by project
+        Group results for the renderer, keyed by project and then labelled
 
-        The driver groups by tracked requirement, and its two requirements happen to
-        be labelled by project, so grouping on `endpoint.project` here produces
-        exactly what it produces. This exists so that a test can go on reading as a
-        flat list of endpoints rather than as a list of groups of endpoints.
+        Exists so that a test can go on reading as a flat list of endpoints rather
+        than as a list of groups of endpoints.
+
+        **Grouping by project is a property of this helper, not of the driver.** The
+        two used to be the same thing, because there was one question per project.
+        They no longer are: the driver asks CMIP7 two questions now (`tas` and
+        `tos`), and anything which groups the answers by project folds them into one
+        -- which is precisely the mistake `ReportGroup`'s own docstring exists to
+        warn about.
+
+        So every endpoint handed to this helper belongs to one question per project,
+        and the label defaults to the bare project name, which is all a layout test
+        needs. Pass `labels` to use the names the driver really uses, which is what a
+        checked-in copy of the email should carry. A test which wants *two* questions
+        of one project has to build its `ReportGroup`s itself --
+        `test_report_rendering.test_both_cmip7_questions` does, and is the fixture
+        that shows what the real email now looks like.
+
+        Parameters
+        ----------
+        results
+            The endpoint results to group
+
+        detailed
+            The labels, *after* `labels` is applied, which get a full changes table
+
+        labels
+            Maps a project to what to call its group. `None` uses the project name.
         """
-        by_label: dict[str, list[EndpointResult]] = {}
+        names = {} if labels is None else labels
+
+        by_project: dict[str, list[EndpointResult]] = {}
         for result in results:
-            by_label.setdefault(result.endpoint.project, []).append(result)
+            by_project.setdefault(result.endpoint.project, []).append(result)
 
         return tuple(
             ReportGroup(
-                label=label, detailed=label in detailed, results=tuple(of_label)
+                label=names.get(project, project),
+                detailed=names.get(project, project) in detailed,
+                results=tuple(of_project),
             )
-            for label, of_label in by_label.items()
+            for project, of_project in by_project.items()
         )
 
     return SummaryScenes(

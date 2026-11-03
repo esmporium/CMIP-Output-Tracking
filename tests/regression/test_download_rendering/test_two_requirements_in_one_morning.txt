@@ -1,0 +1,19 @@
+Subject: pattern-effect downloads: 11 fetched, 194.8 MB
+
+pattern-effect-tas-mon-historical · CMIP7 tas
+  0 file(s): 0 fetched, 0 already here, 0 failed
+  0 B moved into /data/cmip
+
+pattern-effect-sst-mon-historical · CMIP7 tos
+  11 file(s): 11 fetched, 0 already here, 0 failed
+  194.8 MB moved into /data/cmip
+
+FETCHED (3 datasets, 11 files, 194.8 MB)
+  id   model          variant   grid  version   files     size  from
+  200  ACCESS-ESM1-6  r1i1p1f1  g118  20261008      6  64.9 MB  esgf.nci.org.au
+  201  CanESM6-0-MR   r1i1p1f1  g147  20260629      3  64.9 MB  crd-esgf-drc.ec.gc.ca
+  202  UKESM1-3-LL    r1i1p1f2  g126  20261020      2  64.9 MB  ceda.ac.uk
+
+In the database
+  336 file(s) (336 done)
+  nothing outstanding

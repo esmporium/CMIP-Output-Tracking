@@ -1,4 +1,4 @@
-CMIP7  east (search.east.esgf.io)
+CMIP7 tas  east (search.east.esgf.io)
 pattern-effect-cmip7-east: no changes
 
 run 7, newest started 2026-10-20 06:02 UTC
@@ -12,7 +12,7 @@ RUN HEALTH
 
 CURRENT STATE (4 datasets)
 
-CMIP7  west (search.west.esgf.io)
+CMIP7 tas  west (search.west.esgf.io)
 pattern-effect-cmip7-west: 1 removed (run incomplete)
 
 run 7, newest started 2026-10-20 06:02 UTC
@@ -37,7 +37,7 @@ CURRENT STATE (4 datasets)
 EAST vs WEST
   east and west agree, on all 4 datasets at the same versions
 
-CMIP7  models with at least one satisfying variant
+CMIP7 tas  models with at least one satisfying variant
   model             east  west
   ACCESS-ESM1-6        1     1
   CanESM6-0-MR         2     2
@@ -46,7 +46,7 @@ CMIP7  models with at least one satisfying variant
   models satisfied     3     3
   3 models have at least one variant which satisfies the requirement
 
-CMIP6 (6 of 7 answered; 923 datasets at newest usable version)
+CMIP6 tas (6 of 7 answered; 923 datasets at newest usable version)
   endpoint  host                 current  stale  absent  vs last run
   nsc       esg-dn1.nsc.liu.se         -      -       -  FAILED
   ornl      esgf-node.ornl.gov       903      0      20  no changes
@@ -61,7 +61,7 @@ CMIP6 (6 of 7 answered; 923 datasets at newest usable version)
   FAILED  nsc (esg-dn1.nsc.liu.se): read timeout
   INCOMPLETE  ceda (esgf.ceda.ac.uk): count may be short, and not a usable baseline
 
-CMIP6  models with at least one satisfying variant
+CMIP6 tas  models with at least one satisfying variant
   model             ornl  nci  dkrz  ceda  east  west
   ACCESS-CM2         129  115   104   104    66    66
   CanESM5            129  115   104   104    66    66

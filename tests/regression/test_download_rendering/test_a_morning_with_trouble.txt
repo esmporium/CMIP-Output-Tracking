@@ -1,6 +1,6 @@
 Subject: [2 FAILED] pattern-effect downloads: 2 fetched, 83.1 MB
 
-pattern-effect-tas-mon-historical · CMIP7
+pattern-effect-tas-mon-historical · CMIP7 tas
   5 file(s): 2 fetched, 1 already here, 2 failed, 2 for good
   83.1 MB moved into /data/cmip
   1 file needed a fallback mirror

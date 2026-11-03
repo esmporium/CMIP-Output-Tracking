@@ -29,14 +29,55 @@ which is the only thing it is for. The file counts are real too, and lopsided --
 measured 2026-11-03 against the live archive.
 """
 
-REQUIREMENT = "pattern-effect-tas-mon-historical \u00b7 CMIP7"
+REQUIREMENT = "pattern-effect-tas-mon-historical \u00b7 CMIP7 tas"
 """
-What the driver titles a download block with
+What the driver titles the `tas` download block with
 
-The requirement and its project, not just the project: once two questions share a
-project, the project stops identifying which asked for the bytes. Spelled out here
-rather than defaulted, because a checked-in copy of the mail should carry the title
-that really goes out.
+The requirement and its label, not just the project: two questions now *do* share
+CMIP7, so the project no longer identifies which one asked for the bytes. Spelled
+out here rather than defaulted, because a checked-in copy of the mail should carry
+the title that really goes out.
+
+The variable appears twice over -- once in the stem, once in the label -- which is
+mildly redundant and kept anyway: the label is what the *search* report heads this
+question with, so carrying it here is what lets a reader match the two emails up.
+"""
+
+SST_REQUIREMENT = "pattern-effect-sst-mon-historical \u00b7 CMIP7 tos"
+"""What the driver titles the `tos` download block with"""
+
+SST_MODELS = (
+    ("ACCESS-ESM1-6", "r1i1p1f1", "g118", "20261008", 6, "esgf.nci.org.au"),
+    ("CanESM6-0-MR", "r1i1p1f1", "g147", "20260629", 3, "crd-esgf-drc.ec.gc.ca"),
+    ("UKESM1-3-LL", "r1i1p1f2", "g126", "20261020", 2, "ceda.ac.uk"),
+)
+"""
+Real CMIP7 models, variants, ocean grids, version stamps, file counts and nodes
+
+Ocean grids, so `g118`/`g147`/`g126` where the `tas` fixtures are `g115`/`g150`/`g110`
+-- the same models on a different grid, which is what `tos` being an ocean variable
+looks like in a report.
+
+The whole row is measured rather than invented, and the node in particular, because
+which node serves a dataset follows which institution ran the model: ACCESS is at
+NCI, CanESM at Environment Canada, UKESM at CEDA. That is the fact this fixture
+exists to show. Every `tos` dataset version has exactly one node, so ranking nodes by
+health has nothing to choose between -- and yet the requirement as a whole is spread
+over four of them, which is what makes fetching several files at once worth doing.
+
+Measured 2026-11-03 against the live archive, where the full split is CanESM6-0-MR 25
+(g147, Canada), ACCESS-ESM1-6 10 (g118, NCI), UKCM2-0-LL 5 and UKESM1-3-LL 2 (both
+g126, CEDA), CAS-ESM2-1-CSM 1 (g207, IAP).
+"""
+
+TYPICAL_SST_FILE_BYTES = 68100000
+"""
+How large one monthly `tos` file really is, measured 2026-11-03
+
+Within a per-cent of the `tas` figure, which was the surprise: the expectation going
+in was that `tos` would be the heavier of the two. Across the whole requirement it
+is in fact the lighter -- 18.4 GB against 22.7 GB -- because there are fewer of them
+(270 files to 325), not because each one is smaller.
 """
 
 TYPICAL_FILE_BYTES = 65345526
@@ -229,6 +270,71 @@ def test_a_morning_with_trouble(file_regression, download_scenes):
     rendered = report(
         [download_scenes.group(records, label=REQUIREMENT, n_files=5, n_given_up=2)],
         download_scenes.held(done=323, given_up=2, bytes_done=323 * TYPICAL_FILE_BYTES),
+        root=download_scenes.root,
+    )
+
+    file_regression.check(rendered, extension=".txt")
+
+
+@pytest.fixture
+def sst_first_run(download_scenes):
+    """
+    Get the `tos` bulk run: the morning the second question is switched on
+
+    Deliberately alongside a quiet `tas` run in the test below, because that is the
+    realistic shape of the morning it happens: `tas` has been running for weeks and
+    has nothing to do, and the new question arrives with its whole archive at once.
+    """
+    records = []
+    file_id = 900
+    dataset_version_id = 200
+    for model, variant, grid, version, n_files, node in SST_MODELS:
+        for part in range(n_files):
+            records.append(
+                download_scenes.fetched(
+                    f"tos_tavg-u-hxy-sea_mon_glb_{grid}_{model}"
+                    f"_historical_{variant}_part{part:02d}.nc",
+                    size=TYPICAL_SST_FILE_BYTES // n_files,
+                    file_id=file_id,
+                    model=model,
+                    variant_label=variant,
+                    version=version,
+                    grid_label=grid,
+                    dataset_version_id=dataset_version_id,
+                    served_by=node,
+                )
+            )
+            file_id += 1
+        dataset_version_id += 1
+
+    return tuple(records)
+
+
+def test_two_requirements_in_one_morning(
+    file_regression, download_scenes, sst_first_run
+):
+    """
+    The morning `tos` was added to a job which was already fetching `tas`
+
+    The layout question this answers: one email now carries two download blocks, and
+    a reader has to be able to tell at a glance which bytes belong to which question
+    and that the quiet one really did run rather than being left out.
+
+    `tas` is quiet and `tos` arrives in bulk, which is the asymmetry that makes the
+    titles load-bearing. The `In the database` figures at the end are shared -- they
+    are the whole database, not one requirement's share of it -- which is worth
+    seeing stated once rather than per block.
+    """
+    rendered = report(
+        [
+            download_scenes.group(label=REQUIREMENT),
+            download_scenes.group(sst_first_run, label=SST_REQUIREMENT),
+        ],
+        download_scenes.held(
+            done=325 + len(sst_first_run),
+            bytes_done=325 * TYPICAL_FILE_BYTES
+            + len(sst_first_run) * TYPICAL_SST_FILE_BYTES,
+        ),
         root=download_scenes.root,
     )
 

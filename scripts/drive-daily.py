@@ -83,18 +83,42 @@ under `DOWNLOAD_ROOT` and the next download would fetch all of it again.
 DB_PATH = REPO_ROOT / "dbs" / f"{DB_VERSION_ID}_db.sqlite"
 """Database holding every result we have ever seen, and every run we have ever done"""
 
-SEARCH_STEM = "pattern-effect-tas-mon-historical"
+TAS_STEM = "pattern-effect-tas-mon-historical"
 """
-What this search is called in the database, before the project and endpoint
+What the `tas` search is called in the database, before the project and endpoint
 
 See [TrackedRequirement.stem][local.endpoints.TrackedRequirement.stem]: this is the
 key the whole history hangs off, so changing it starts again from scratch.
 """
 
+SST_STEM = "pattern-effect-sst-mon-historical"
+"""
+What the `tos` search is called in the database, before the project and endpoint
+
+`sst` rather than `tos`, because the question is about the sea surface temperature
+pattern and `tos` is only what CMIP happens to call the variable that answers it.
+The variable itself rides in `role_stem`, where it belongs.
+
+As load-bearing as [TAS_STEM][]: changing it starts this question's history again
+from scratch.
+"""
+
+SUBJECT_STEM = "pattern-effect"
+"""
+What both emails call this job in their subject lines
+
+Deliberately *not* either stem above. A subject line names the job, and the job is
+now more than one question, so a subject built from one question's stem would read
+as a mail about `tas` on a morning when only `tos` moved.
+
+Report-only, and therefore free to change -- but it is what a mail filter matches
+on, so changing it is a thing to go and do something about in Gmail as well.
+"""
+
 REQUIREMENTS = (
     TrackedRequirement(
-        label="CMIP7",
-        stem=SEARCH_STEM,
+        label="CMIP7 tas",
+        stem=TAS_STEM,
         role_stem="tas",
         query=Query(
             project=("CMIP7",),
@@ -111,8 +135,8 @@ REQUIREMENTS = (
         detailed=True,
     ),
     TrackedRequirement(
-        label="CMIP6",
-        stem=SEARCH_STEM,
+        label="CMIP6 tas",
+        stem=TAS_STEM,
         role_stem="tas",
         query=Query(
             project=("CMIP6",),
@@ -146,6 +170,35 @@ REQUIREMENTS = (
         download=False,
         detailed=False,
     ),
+    TrackedRequirement(
+        label="CMIP7 tos",
+        stem=SST_STEM,
+        role_stem="tos",
+        query=Query(
+            project=("CMIP7",),
+            variable=("tos",),
+            experiment=("historical",),
+            reporting_interval=("mon",),
+            # The branded-variable suffix, and the reason this is not just
+            # `variable=("tos",)`. CMIP7 publishes monthly historical `tos` under two
+            # of these and they are not interchangeable:
+            #
+            #   tavg-u-hxy-sea  the gridded field, on the model's native ocean grid
+            #   tavg-u-hm-sea   the zonal mean of it, one number per latitude band
+            #
+            # We want the first. The second is a different quantity that happens to
+            # share a variable name, and a query naming neither would fetch both and
+            # report them as one requirement. Measured against the live archive on
+            # 2026-11-03: 43 dataset versions here, and 25 more under the zonal mean.
+            processing_id=("tavg-u-hxy-sea",),
+        ),
+        endpoints=(
+            Endpoint("CMIP7", "search.east.esgf.io", "east"),
+            Endpoint("CMIP7", "search.west.esgf.io", "west"),
+        ),
+        download=True,
+        detailed=True,
+    ),
 )
 """
 Every question we track, and what to do with its answers
@@ -155,9 +208,19 @@ another frequency, another project -- is adding another of these, and nothing el
 has to learn about it: the search loop, the download loop, both emails and both
 reports all iterate this list.
 
-The two here are the same scientific question asked of two projects, which is why
+The first two are the same scientific question asked of two projects, which is why
 they share a `stem`. The database files them apart because the project and endpoint
 are appended to it.
+
+The third is a *different* question -- the sea surface temperature pattern rather
+than the surface air temperature response -- so it has its own stem and its own
+history. It shares the `tas` question's download directory deliberately: one
+`DOWNLOAD_ROOT`, and esmporium's layout keeps the variables apart by path.
+
+Note that the labels have to be distinct, and not only for readability: the download
+plan is matched back to its search results by label (see
+[with_download_blocks][]), so two requirements sharing one would quietly lose a
+download block out of the morning email. `test_driver_config.py` has the tripwire.
 """
 
 RECIPIENTS = (
@@ -190,6 +253,43 @@ would only train you to ignore both.
 
 MAX_ROWS = 50
 """How many rows of each table to put in the reports before folding the rest away"""
+
+DOWNLOAD_WORKERS = 8
+"""
+How many files to fetch at once
+
+A ceiling, not a promise. `PER_DATA_NODE` is what actually paces a run, and most
+files have exactly one node serving them, so a requirement concentrated on one host
+moves `PER_DATA_NODE` of them at a time however high this is.
+
+Eight because that is roughly what the archive gives us to work with. Measured on
+2026-11-03, CMIP7 monthly historical `tos` is spread over four data nodes
+(`crd-esgf-drc.ec.gc.ca` has 25 of the 43 dataset versions, `esgf.nci.org.au` 10,
+`ceda.ac.uk` 7, `esg-earthlab.iap.ac.cn` 1), and `tas` over five. So eight workers
+can keep every node busy without queueing much work behind a node that is already
+at its own limit.
+
+Worth raising only alongside evidence. `make data-node-health` is where that
+evidence is: throughput that stops rising with more workers means the bottleneck is
+our uplink or the node, and neither is fixed by asking for more.
+"""
+
+PER_DATA_NODE = 4
+"""
+The most transfers to run at once against any one data node
+
+The number that matters, and the one to be careful with. ESGF data nodes are shared
+infrastructure run by other people's institutions; a node which starts refusing us
+records `blocked` attempts, which `make data-node-health` reports.
+
+A worker whose file's best node is at this limit **waits** rather than being sent to
+a node ranked lower, so this paces a run and never silently changes which node
+served us.
+
+Four is esmporium's own default, restated here rather than left implicit because it
+is a politeness decision about other people's servers and it should be visible in
+the configuration block that gets reviewed.
+"""
 
 
 # ---------------------------------------------------------------------------------
@@ -407,8 +507,19 @@ def download_everything(engine: Engine, root: Path) -> tuple[DownloadGroup, ...]
     """
     groups = []
     for tracked in downloading():
-        logger.info("Downloading %s", tracked.label)
-        results = run_downloads(engine, tracked.query, root)
+        logger.info(
+            "Downloading %s, %s file(s) at a time (%s per data node)",
+            tracked.label,
+            DOWNLOAD_WORKERS,
+            PER_DATA_NODE,
+        )
+        results = run_downloads(
+            engine,
+            tracked.query,
+            root,
+            max_workers=DOWNLOAD_WORKERS,
+            per_data_node=PER_DATA_NODE,
+        )
         logger.info("%s: %s", tracked.label, totals(results))
 
         groups.append(
@@ -475,7 +586,7 @@ def report_failure(what: str) -> None:
     """
     try:
         notify(
-            f"[FAILED] {SEARCH_STEM} {what}",
+            f"[FAILED] {SUBJECT_STEM} {what}",
             f"The {what} did not finish. The traceback was:\n\n"
             f"{traceback.format_exc()}",
         )
@@ -576,7 +687,7 @@ def main(argv: list[str] | None = None) -> None:
                 for result in group.results
             )
             if anything_to_say or EMAIL_WHEN_NOTHING_CHANGED:
-                try_to_notify(report_subject(groups, stem=SEARCH_STEM), rendered)
+                try_to_notify(report_subject(groups, stem=SUBJECT_STEM), rendered)
             else:
                 logger.info(
                     "Nothing changed and EMAIL_WHEN_NOTHING_CHANGED is off, no mail"
@@ -620,7 +731,7 @@ def main(argv: list[str] | None = None) -> None:
 
         return
 
-    notify(download_subject(download_groups, stem=SEARCH_STEM), rendered)
+    notify(download_subject(download_groups, stem=SUBJECT_STEM), rendered)
 
 
 if __name__ == "__main__":
