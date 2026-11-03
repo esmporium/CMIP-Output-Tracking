@@ -16,9 +16,12 @@ from esmporium.db import DataNodeHealth
 
 from local.node_health import (
     FetchTime,
+    Transfer,
     attributable_failures,
     describe_failures,
+    fetch_time,
     format_node_health,
+    measure_parallelism,
     ok_rate,
     readable_duration,
 )
@@ -297,3 +300,271 @@ def test_the_elapsed_span_is_not_the_time_spent_fetching():
 
     assert spread.seconds == 13_980
     assert spread.elapsed > datetime.timedelta(days=3)
+
+
+# --- how much was in flight at once -------------------------------------------------
+
+RUN_START = datetime.datetime(2026, 11, 3, 21, 0)
+"""When the fixtures below start their first transfer. Naive UTC, as the rows are."""
+
+
+def transfer(
+    at: float,
+    seconds: float,
+    *,
+    node: str = "esgf.nci.org.au",
+    n_bytes: int = 8_000_000,
+) -> Transfer:
+    """
+    Build one transfer, placed by when it *started*
+
+    `at` is seconds after `RUN_START`, which is how a test describes an overlap. The
+    dataclass itself is keyed on when a transfer finished, because that is the one
+    timestamp esmporium records, so this does the subtraction a test should not have
+    to think about.
+    """
+    return Transfer(
+        data_node=node,
+        finished=RUN_START + datetime.timedelta(seconds=at + seconds),
+        seconds=seconds,
+        n_bytes=n_bytes,
+    )
+
+
+def test_transfers_back_out_when_they_started_from_when_they_finished():
+    # esmporium records one timestamp and one duration, so the interval's near end is
+    # always derived. Everything else here is a sweep over those intervals.
+    one = transfer(10, 5)
+
+    assert one.started == RUN_START + datetime.timedelta(seconds=10)
+    assert one.finished == RUN_START + datetime.timedelta(seconds=15)
+
+
+def test_transfers_that_never_overlap_report_one_at_a_time():
+    # The sequential case, which is what every run before 2026-11-03 looked like.
+    parallelism = measure_parallelism(
+        [transfer(0, 10), transfer(10, 10), transfer(20, 10)]
+    )
+
+    assert parallelism.overall.peak == 1
+    assert parallelism.overall.mean == pytest.approx(1.0)
+    # And no speedup to claim, which is the honest reading of a serial run.
+    assert parallelism.overall.active_seconds == pytest.approx(30)
+    assert parallelism.overall.worker_seconds == pytest.approx(30)
+
+
+def test_a_handoff_is_not_an_overlap():
+    # The bug this test exists for. A worker pool hands its slot straight on, so with
+    # files of equal size the ties are *exact*: one transfer ends at the instant the
+    # next begins. Counting that as two in flight reported a peak of 11 against a
+    # pool of 8 -- a number the run could not physically have produced.
+    parallelism = measure_parallelism([transfer(0, 10), transfer(10, 10)])
+
+    assert parallelism.overall.peak == 1
+
+
+def test_fully_overlapping_transfers_report_all_of_them():
+    parallelism = measure_parallelism([transfer(0, 10) for _ in range(8)])
+
+    assert parallelism.overall.peak == 8
+    assert parallelism.overall.mean == pytest.approx(8.0)
+
+
+def test_the_average_is_the_speedup_over_doing_them_one_at_a_time():
+    # Four transfers of ten seconds each, two at a time: twenty seconds of wall clock
+    # for forty seconds of transfer, so twice as fast as a serial run would have been.
+    parallelism = measure_parallelism(
+        [transfer(0, 10), transfer(0, 10), transfer(10, 10), transfer(10, 10)]
+    )
+
+    assert parallelism.overall.active_seconds == pytest.approx(20)
+    assert parallelism.overall.worker_seconds == pytest.approx(40)
+    assert parallelism.overall.mean == pytest.approx(2.0)
+
+
+def test_idle_time_is_left_out_of_the_average():
+    # The whole reason the union is swept rather than the first-to-last span taken.
+    # Two transfers a week apart are not "0.00003 transfers in flight on average";
+    # they are one at a time, twice, with a week of nothing in between.
+    a_week = 7 * 24 * 60 * 60
+    parallelism = measure_parallelism([transfer(0, 10), transfer(a_week, 10)])
+
+    assert parallelism.overall.mean == pytest.approx(1.0)
+    assert parallelism.overall.active_seconds == pytest.approx(20)
+    # The span is still available, and still enormous, for the line that reports it.
+    assert parallelism.overall.span_seconds == pytest.approx(a_week + 10)
+
+
+def test_each_node_is_measured_on_its_own():
+    # What says whether one archive was leant on harder than we meant. Eight at once
+    # overall, four against each of two nodes, is a run behaving exactly as configured.
+    parallelism = measure_parallelism(
+        [transfer(0, 10, node="a") for _ in range(4)]
+        + [transfer(0, 10, node="b") for _ in range(4)]
+    )
+
+    assert parallelism.overall.peak == 8
+    assert parallelism.by_node["a"].peak == 4
+    assert parallelism.by_node["b"].peak == 4
+
+
+def test_the_aggregate_rate_is_in_the_same_megabytes_as_the_column_beside_it():
+    # esmporium divides by 1_000_000 for `median_throughput_mb_per_s`, so this has to
+    # as well: the two numbers are printed to be compared, and `readable_bytes` in
+    # the same report steps by 1024.
+    parallelism = measure_parallelism([transfer(0, 10, n_bytes=50_000_000)])
+
+    assert parallelism.overall.aggregate_mb_per_s == pytest.approx(5.0)
+
+
+def test_nothing_fetched_measures_nothing():
+    # `None` rather than a zeroed record, for the same reason `fetch_time` does it:
+    # "nothing was downloaded" must not print as "it took no time and ran perfectly".
+    assert measure_parallelism([]) is None
+    assert fetch_time([]) is None
+
+
+def test_instantaneous_attempts_do_not_divide_by_zero():
+    # Reachable with a cached or refused attempt recorded as taking no time at all.
+    # There is then no interval to overlap, so there is nothing to report rather than
+    # an infinite rate.
+    parallelism = measure_parallelism([transfer(0, 0.0), transfer(0, 0.0)])
+
+    assert parallelism.overall.mean is None
+    assert parallelism.overall.aggregate_mb_per_s is None
+
+
+def test_the_timing_total_agrees_with_the_transfers_it_came_from():
+    transfers = [transfer(0, 10), transfer(5, 20)]
+
+    took = fetch_time(transfers)
+
+    assert took.seconds == pytest.approx(30)
+    assert took.first == RUN_START
+    assert took.last == RUN_START + datetime.timedelta(seconds=25)
+
+
+# --- and how it reads ---------------------------------------------------------------
+
+
+def test_the_parallel_block_says_what_the_mb_per_s_column_cannot():
+    # The point of the whole block. Per-transfer throughput does not improve with
+    # parallelism -- contention makes it slightly worse -- so without this a run that
+    # went four times faster reads as one that went marginally slower.
+    node = health(n_calls=8, n_success=8, median_throughput_mb_per_s=8.0)
+    transfers = [transfer(0, 10) for _ in range(4)] + [
+        transfer(10, 10) for _ in range(4)
+    ]
+
+    rendered = format_node_health(
+        {node.data_node: node},
+        fetch_time(transfers),
+        window="all history",
+        parallelism=measure_parallelism(transfers),
+    )
+
+    assert "IN PARALLEL" in rendered
+    assert "4 transfers in flight at peak" in rendered
+    assert "4.0x longer" in rendered
+    # Stated as a ceiling, not as a measurement, because a lone transfer would have
+    # had the uplink to itself.
+    assert "upper bound" in rendered
+
+
+def test_a_parallel_run_reports_its_wall_clock_and_not_only_the_sum():
+    # The regression this guards. The span line used to be printed only when the span
+    # was *longer* than the summed time, which is the multi-night case. A parallel run
+    # is the opposite -- the sum is several times the wall clock -- so the one figure
+    # anybody actually waited through could never be printed.
+    node = health(n_calls=60, n_success=60)
+    transfers = [
+        transfer(offset, 120) for offset in range(0, 600, 120) for _ in range(8)
+    ]
+
+    rendered = format_node_health(
+        {node.data_node: node},
+        fetch_time(transfers),
+        window="all history",
+        parallelism=measure_parallelism(transfers),
+    )
+
+    assert "spent fetching" in rendered
+    assert "first attempt" in rendered
+    assert "because transfers overlapped" in rendered
+    assert "includes any time between runs" not in rendered
+
+
+def test_the_per_node_column_only_appears_once_it_has_been_measured():
+    # A column of dashes would read as "we never asked this node for more than one
+    # thing at once", which is a claim rather than an absence.
+    node = health(n_calls=1, n_success=1)
+
+    without = format_node_health({node.data_node: node}, window="all history")
+    transfers = [transfer(0, 10)]
+    with_it = format_node_health(
+        {node.data_node: node},
+        fetch_time(transfers),
+        window="all history",
+        parallelism=measure_parallelism(transfers),
+    )
+
+    assert "at once" not in without.splitlines()[1]
+    assert "at once" in with_it.splitlines()[1]
+    assert "IN PARALLEL" not in without
+
+
+def test_the_busiest_node_is_named_rather_than_counted():
+    # "4 at once against a single node" is only actionable with the host attached,
+    # because the question it answers is which archive to ease off.
+    node = health("crd-esgf-drc.ec.gc.ca", n_calls=4, n_success=4)
+    transfers = [transfer(0, 10, node="crd-esgf-drc.ec.gc.ca") for _ in range(4)]
+
+    rendered = format_node_health(
+        {node.data_node: node},
+        fetch_time(transfers),
+        window="all history",
+        parallelism=measure_parallelism(transfers),
+    )
+
+    assert "against a single node (crd-esgf-drc.ec.gc.ca)" in rendered
+
+
+def test_a_node_we_have_health_for_but_no_transfers_reads_as_none_at_once():
+    # Cannot happen -- both come from the same rows over the same window -- but a
+    # read-only report should print zero rather than raise.
+    seen = health("a", n_calls=1, n_success=1)
+    unseen = health("b", n_calls=1, n_success=1)
+    transfers = [transfer(0, 10, node="a")]
+
+    rendered = format_node_health(
+        {seen.data_node: seen, unseen.data_node: unseen},
+        fetch_time(transfers),
+        window="all history",
+        parallelism=measure_parallelism(transfers),
+    )
+
+    # Both nodes still get a row, and the one we have no intervals for reads as zero
+    # in flight rather than taking the report down with it.
+    rows = {
+        line.split()[0]: line.split()
+        for line in rendered.splitlines()
+        if line.startswith("  a ") or line.startswith("  b ")
+    }
+    assert rows["a"][-1] == "1"
+    assert rows["b"][-1] == "0"
+
+
+def test_the_parallel_report_still_ends_cleanly():
+    node = health(n_calls=1, n_success=1)
+    transfers = [transfer(0, 10)]
+
+    rendered = format_node_health(
+        {node.data_node: node},
+        fetch_time(transfers),
+        window="all history",
+        parallelism=measure_parallelism(transfers),
+    )
+
+    assert rendered.endswith("\n")
+    assert not rendered.endswith("\n\n")
+    assert all(line == line.rstrip() for line in rendered.splitlines())

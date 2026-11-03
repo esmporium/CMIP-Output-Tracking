@@ -67,9 +67,12 @@ MODULE_LEVEL_NAMES: dict[str, tuple[str, ...]] = {
         # What `local.node_health` summarises the recorded attempts with
         "DataNodeHealth",
         "aggregate_data_node_health",
-        # The row `local.node_health.read_fetch_time` reads the timings off, because
+        # The row `local.node_health.read_transfers` reads the timings off, because
         # `DataNodeHealth` keeps the throughput and the bytes but not the time
         "DataNodeCallRecord",
+        # Joined to the above so the report can print a host name rather than a
+        # foreign key
+        "DataNode",
         # The rows `local.downloads.describe_results` reads an identity back out of
         "Dataset",
         "DatasetVersion",
@@ -181,9 +184,18 @@ ATTRIBUTES_READ: dict[str, tuple[str, ...]] = {
     "File": ("id", "filename", "dataset_version_id", "size", "checksum"),
     "DatasetVersion": ("id", "version", "dataset_id"),
     "Dataset": ("id", "model", "variant_label", "grid_label"),
-    # Read by `local.node_health.read_fetch_time`. `seconds` is the whole reason that
-    # function exists; `created_at` is what the first-to-last span is measured over.
-    "DataNodeCallRecord": ("seconds", "created_at"),
+    # Read by `local.node_health.read_transfers`. `seconds` is the whole reason that
+    # function exists; `created_at` is what each transfer's interval ends at, and
+    # the two together are what the concurrency sweep works on. `bytes_transferred`
+    # is what the aggregate throughput is bytes of, and `data_node_id` is the join.
+    "DataNodeCallRecord": (
+        "seconds",
+        "created_at",
+        "bytes_transferred",
+        "data_node_id",
+    ),
+    # Joined to the above. Only the host name is read off it.
+    "DataNode": ("data_node",),
 }
 """
 Every attribute of an esmporium summary type that our renderer reads
@@ -351,6 +363,33 @@ def test_a_role_may_still_carry_our_endpoint_tag():
     # facet; if that stops being true, both endpoints start searching for a variable
     # named after a data centre.
     assert east.tree.query == west.tree.query
+
+
+def test_a_recorded_attempt_is_still_timed_without_its_queue_wait():
+    # `local.node_health.Transfer` treats `[created_at - seconds, created_at]` as the
+    # stretch a transfer was really in flight, and every concurrency figure in the
+    # report is a sweep over those intervals. That is only true because of where
+    # esmporium starts the clock: inside `fetch_to_path`, which the per-node limiter
+    # wraps from *outside*, so a worker waiting for a slot is not counted as
+    # transferring.
+    #
+    # If that nesting is ever inverted, the intervals silently grow to include queue
+    # time, every overlap becomes fiction, and the report starts claiming a
+    # concurrency the run never had. There is no field to assert on, so this pins the
+    # arrangement: the limiter is applied in the run loop and not in the fetch.
+    fetch = inspect.signature(esmporium.downloads.fetch_to_path).parameters
+    one_file = inspect.signature(esmporium.downloads.download_file).parameters
+
+    assert "limiter" in one_file, (
+        "esmporium's download_file no longer takes a limiter. Check where the "
+        "per-node slot is now acquired: local.node_health.Transfer assumes it is "
+        "outside the timed fetch."
+    )
+    assert "limiter" not in fetch, (
+        "esmporium's fetch_to_path now takes a limiter, so the queue wait may be "
+        "inside the timed section. local.node_health.Transfer assumes it is not, and "
+        "every concurrency figure in the data node report depends on that."
+    )
 
 
 @pytest.mark.parametrize(

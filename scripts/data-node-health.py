@@ -7,6 +7,7 @@ here searches, downloads, emails or writes: it is the thing to run when somebody
 than with a feeling.
 
     uv run python scripts/data-node-health.py              # everything we know
+    uv run python scripts/data-node-health.py --days 1     # just last night's run
     uv run python scripts/data-node-health.py --days 7     # how they are doing lately
     uv run python scripts/data-node-health.py --db /other/path.sqlite
 
@@ -15,11 +16,19 @@ not per file -- because `local.downloads.run_downloads` passes
 `record_data_node_calls` as its observer. So a file fetched on the third try from the
 second mirror contributed four rows, and `attempts` is larger than any file count.
 
+**Read the `IN PARALLEL` block before reading the `MB/s` column.** Since 2026-11-03
+the daily job fetches eight files at once, and that does not make any one transfer
+faster -- sharing an uplink makes each slightly slower, if anything. `MB/s` is
+esmporium's median *per attempt*, so on its own a parallel run looks like a
+marginally worse sequential one. The figures that parallelism actually improves are
+in that block: how many transfers were in flight, and the aggregate rate.
+
 The time at the foot is transfer time summed over every attempt, including the failed
-ones: it leaves out retry backoff and anything that is not a fetch, and it is
-wall-clock only because esmporium's download loop is sequential today. Where that
-differs from the first-to-last span by more than a minute, both are reported, because
-over more than one night the span is mostly the idle time between runs.
+ones. It leaves out retry backoff and anything that is not a fetch, and it is now
+*worker* time rather than wall-clock: with eight workers it can be several times
+longer than anybody waited. Where it and the first-to-last span differ by more than a
+minute both are reported, and the report says which way round it came out -- a longer
+span is idle time between runs, a shorter one is transfers overlapping.
 
 **This has to be run on the machine that did the downloading.** The database is
 git-ignored, so the copy in a clone has the table and none of the rows.
@@ -36,7 +45,12 @@ from esmporium.db import aggregate_data_node_health, configure_sqlite_for_concur
 from sqlalchemy.exc import OperationalError
 from sqlmodel import create_engine
 
-from local.node_health import format_node_health, read_fetch_time
+from local.node_health import (
+    fetch_time,
+    format_node_health,
+    measure_parallelism,
+    read_transfers,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 """
@@ -173,11 +187,17 @@ def main(argv: list[str] | None = None) -> int:
     since = None if args.days is None else datetime.timedelta(days=args.days)
     try:
         health = aggregate_data_node_health(engine, since=since)
-        # The same `since`, deliberately: two reads of one table, so the time cannot
-        # end up describing a different window than the table above it. A second read
-        # rather than one, because classifying outcomes is esmporium's job and only
-        # the timing is missing from what it hands back.
-        took = read_fetch_time(engine, since=since)
+        # The same `since`, deliberately: two reads of one table, so the timings
+        # cannot end up describing a different window than the table above them. A
+        # second read rather than one, because classifying outcomes is esmporium's
+        # job and only the timing is missing from what it hands back.
+        #
+        # One read for both timing figures, though: the parallelism and the total are
+        # the same rows looked at two ways, and reading them twice would be a way for
+        # the two to disagree.
+        transfers = read_transfers(engine, since=since)
+        took = fetch_time(transfers)
+        parallelism = measure_parallelism(transfers)
     except OperationalError as exc:
         # The likeliest cause by far is an older database: `datanodecallrecord`
         # arrived with the download tables, so `001_db.sqlite` has search history and
@@ -193,7 +213,15 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Database: {args.db}")
     print()
-    print(format_node_health(health, took, window=window_phrase(args.days)), end="")
+    print(
+        format_node_health(
+            health,
+            took,
+            window=window_phrase(args.days),
+            parallelism=parallelism,
+        ),
+        end="",
+    )
 
     return 0
 
