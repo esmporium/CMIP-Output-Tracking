@@ -664,7 +664,7 @@ quietly fills a disk; the dry run is how you see the second one coming.
 Adding a facet value is the easy case — each facet is a tuple:
 
 ```python
-variable=("tas", "pr"),
+variable = (("tas", "pr"),)
 ```
 
 This still changes the requirement's meaning, so it still needs a new name.
