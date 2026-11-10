@@ -9,7 +9,7 @@ of what the database handed back, so none of it needs a database.
 
 from __future__ import annotations
 
-from local.downloads import tally_records
+from local.downloads import IDENTITY_FACETS, describe_plan, tally_records
 
 
 def test_a_dataset_several_files_wide_becomes_one_row(download_scenes):
@@ -107,3 +107,145 @@ def test_every_node_which_served_a_dataset_is_kept(download_scenes):
         "esgf.ceda.ac.uk",
         "esgf.nci.org.au",
     }
+
+
+GREGORY_COLUMNS = ("model", "variant_label", "experiment", "variable")
+"""The columns a question spanning several experiments and variables asks for"""
+
+
+def plan_item(dataset_version_id, file_id, size=1000):
+    """
+    Build the one thing `describe_plan` reads off a planned file
+
+    A stand-in rather than the real `DownloadPlanItem`, because `describe_plan` reads
+    exactly three things off one -- which dataset version it belongs to, and the
+    expected size on its request -- and building a real one would mean building a
+    real route to nowhere.
+
+    Parameters
+    ----------
+    dataset_version_id
+        Which dataset version the file belongs to
+
+    file_id
+        The file's id
+
+    size
+        What the API said it weighs
+
+    Returns
+    -------
+    :
+        Something shaped like a plan item
+    """
+
+    class Request:
+        expected_size = size
+
+    class Item:
+        request = Request()
+
+    Item.dataset_version_id = dataset_version_id
+    Item.file_id = file_id
+
+    return Item()
+
+
+def identities_for(facets):
+    """
+    Build an identity lookup which answers with `facets` for every version
+
+    Parameters
+    ----------
+    facets
+        The facet mapping to answer with
+
+    Returns
+    -------
+    :
+        A lookup `describe_plan` can be given instead of the database one
+    """
+
+    def lookup(session, dataset_version_ids):
+        return {each: (facets, "20260101") for each in dataset_version_ids}
+
+    return lookup
+
+
+IDENTITY = {
+    "model": "UKCM2a-0-HH",
+    "variant_label": "r1i1p1f1",
+    "grid_label": "g137",
+    "experiment": "piControl",
+    "variable": "rsut",
+}
+"""One dataset's worth of facets, with every one `RECORDED_FACETS` names"""
+
+
+def test_a_requirements_choice_of_columns_survives_the_trip_to_the_renderer():
+    # The regression this exists for, and it was a real one. `describe_plan` took the
+    # column names as `facets` and then reused that name for the loop variable
+    # holding each dataset's facet *mapping* -- so every intent came back carrying
+    # the last dataset's facets where its column choice should have been, and every
+    # table in both emails rendered the same five columns.
+    #
+    # Nothing raised. The only symptom was a `grid` column on a question that never
+    # asked for one, and `experiment` and `variable` columns on two questions where
+    # they are the same value in every row.
+    intent = describe_plan(
+        engine=None,
+        label="CMIP7 gregory",
+        plan=[plan_item(1, 1)],
+        n_known=1,
+        facets=GREGORY_COLUMNS,
+        identities=identities_for(IDENTITY),
+    )
+
+    assert intent.facets == GREGORY_COLUMNS
+
+
+def test_a_question_which_asks_for_no_columns_gets_the_renderers_default():
+    # `None` rather than `()`, because the renderers read `None` as "use your default"
+    # and `()` as "show no columns at all", which renders a table of bare ids.
+    intent = describe_plan(
+        engine=None,
+        label="CMIP7 tas",
+        plan=[plan_item(1, 1)],
+        n_known=1,
+        identities=identities_for(IDENTITY),
+    )
+
+    assert intent.facets is None
+
+
+def test_a_tally_carries_every_recorded_facet_whatever_is_printed():
+    # The division the column choice depends on: the lookup happens once and carries
+    # everything, and choosing what to show is the renderer's job. A tally which
+    # carried only the printed columns would make `report_facets` unchangeable
+    # without re-planning.
+    intent = describe_plan(
+        engine=None,
+        label="CMIP7 tas",
+        plan=[plan_item(1, 1)],
+        n_known=1,
+        facets=IDENTITY_FACETS,
+        identities=identities_for(IDENTITY),
+    )
+
+    assert intent.tallies[0].facets == IDENTITY
+    assert set(IDENTITY_FACETS) <= set(intent.tallies[0].facets)
+
+
+def test_files_of_one_dataset_version_become_one_tally():
+    intent = describe_plan(
+        engine=None,
+        label="CMIP7 gregory",
+        plan=[plan_item(7, file_id=each, size=100) for each in range(25)],
+        n_known=25,
+        facets=GREGORY_COLUMNS,
+        identities=identities_for(IDENTITY),
+    )
+
+    assert intent.n_datasets == 1
+    assert intent.n_files == 25
+    assert intent.n_bytes == 2500

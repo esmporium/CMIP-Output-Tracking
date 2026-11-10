@@ -1,0 +1,97 @@
+CMIP7 gregory  east (search.east.esgf.io)
+gregory-toa-mon-abrupt4x-cmip7-east: 12 added
+
+run 7, newest started 2026-10-20 06:02 UTC
+compared against nothing (this is the first run)
+
+ADDED (12)
+  id    model          experiment    variant   variable  version   retracted
+  1230  ACCESS-ESM1-6  abrupt-4xCO2  r1i1p1f1  tas       20260901  no
+  1231  ACCESS-ESM1-6  abrupt-4xCO2  r1i1p1f1  rsdt      20260901  no
+  1232  ACCESS-ESM1-6  abrupt-4xCO2  r1i1p1f1  rsut      20260901  no
+  1233  ACCESS-ESM1-6  abrupt-4xCO2  r1i1p1f1  rlut      20260901  no
+  1234  CanESM6-0-MR   abrupt-4xCO2  r1i1p1f1  tas       20260901  no
+  1235  CanESM6-0-MR   abrupt-4xCO2  r1i1p1f1  rsdt      20260901  no
+  1236  CanESM6-0-MR   abrupt-4xCO2  r1i1p1f1  rsut      20260901  no
+  1237  CanESM6-0-MR   abrupt-4xCO2  r1i1p1f1  rlut      20260901  no
+  1238  UKCM2a-0-HH    abrupt-4xCO2  r1i1p1f1  tas       20260901  no
+  1239  UKCM2a-0-HH    abrupt-4xCO2  r1i1p1f1  rsdt      20260901  no
+  1240  UKCM2a-0-HH    abrupt-4xCO2  r1i1p1f1  rsut      20260901  no
+  1241  UKCM2a-0-HH    abrupt-4xCO2  r1i1p1f1  rlut      20260901  no
+
+REMOVED (0)
+
+MODIFIED (0)
+
+RUN HEALTH
+  1/1 sub-searches answered   host: search.east.esgf.io
+  209/209 documents collected (nothing truncated)
+
+CURRENT STATE (12 datasets)
+
+CMIP7 gregory  west (search.west.esgf.io)
+gregory-toa-mon-abrupt4x-cmip7-west: 12 added
+
+run 7, newest started 2026-10-20 06:02 UTC
+compared against nothing (this is the first run)
+
+ADDED (12)
+  id    model          experiment    variant   variable  version   retracted
+  1230  ACCESS-ESM1-6  abrupt-4xCO2  r1i1p1f1  tas       20260901  no
+  1231  ACCESS-ESM1-6  abrupt-4xCO2  r1i1p1f1  rsdt      20260901  no
+  1232  ACCESS-ESM1-6  abrupt-4xCO2  r1i1p1f1  rsut      20260901  no
+  1233  ACCESS-ESM1-6  abrupt-4xCO2  r1i1p1f1  rlut      20260901  no
+  1234  CanESM6-0-MR   abrupt-4xCO2  r1i1p1f1  tas       20260901  no
+  1235  CanESM6-0-MR   abrupt-4xCO2  r1i1p1f1  rsdt      20260901  no
+  1236  CanESM6-0-MR   abrupt-4xCO2  r1i1p1f1  rsut      20260901  no
+  1237  CanESM6-0-MR   abrupt-4xCO2  r1i1p1f1  rlut      20260901  no
+  1238  UKCM2a-0-HH    abrupt-4xCO2  r1i1p1f1  tas       20260901  no
+  1239  UKCM2a-0-HH    abrupt-4xCO2  r1i1p1f1  rsdt      20260901  no
+  1240  UKCM2a-0-HH    abrupt-4xCO2  r1i1p1f1  rsut      20260901  no
+  1241  UKCM2a-0-HH    abrupt-4xCO2  r1i1p1f1  rlut      20260901  no
+
+REMOVED (0)
+
+MODIFIED (0)
+
+RUN HEALTH
+  1/1 sub-searches answered   host: search.west.esgf.io
+  209/209 documents collected (nothing truncated)
+
+CURRENT STATE (12 datasets)
+
+EAST vs WEST
+  east and west agree, on all 12 datasets at the same versions
+
+CMIP7 gregory -- ancestry
+  Walked back from 12 dataset version(s): 12 link(s) written, 1 hop(s), 3 search(es) fired
+  Chains stopped at (3):
+    model          experiment  variant
+    ACCESS-ESM1-6  piControl   r1i1p1f1
+    CanESM6-0-MR   piControl   r1i1p1f1
+    UKCM2a-0-HH    piControl   r1i1p1f1
+
+TO DOWNLOAD (CMIP7 gregory: 12 datasets, 204 files, 4.4 GB)
+  id    model          variant   experiment    variable  version   files      size
+  1230  ACCESS-ESM1-6  r1i1p1f1  abrupt-4xCO2  tas       20260901     33  733.3 MB
+  1231  ACCESS-ESM1-6  r1i1p1f1  abrupt-4xCO2  rsdt      20260901     33  733.3 MB
+  1232  ACCESS-ESM1-6  r1i1p1f1  abrupt-4xCO2  rsut      20260901     33  733.3 MB
+  1233  ACCESS-ESM1-6  r1i1p1f1  abrupt-4xCO2  rlut      20260901     33  733.3 MB
+  1234  CanESM6-0-MR   r1i1p1f1  abrupt-4xCO2  tas       20260901      3   66.7 MB
+  1235  CanESM6-0-MR   r1i1p1f1  abrupt-4xCO2  rsdt      20260901      3   66.7 MB
+  1236  CanESM6-0-MR   r1i1p1f1  abrupt-4xCO2  rsut      20260901      3   66.7 MB
+  1237  CanESM6-0-MR   r1i1p1f1  abrupt-4xCO2  rlut      20260901      3   66.7 MB
+  1238  UKCM2a-0-HH    r1i1p1f1  abrupt-4xCO2  tas       20260901     15  333.3 MB
+  1239  UKCM2a-0-HH    r1i1p1f1  abrupt-4xCO2  rsdt      20260901     15  333.3 MB
+  1240  UKCM2a-0-HH    r1i1p1f1  abrupt-4xCO2  rsut      20260901     15  333.3 MB
+  1241  UKCM2a-0-HH    r1i1p1f1  abrupt-4xCO2  rlut      20260901     15  333.3 MB
+  into /data/cmip
+
+CMIP7 gregory  models with at least one satisfying variant
+  model             east  west
+  ACCESS-ESM1-6        1     1
+  CanESM6-0-MR         1     1
+  UKCM2a-0-HH          1     1
+  ----------------------------
+  models satisfied     3     3
+  3 models have at least one variant which satisfies the requirement

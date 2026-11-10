@@ -9,6 +9,7 @@ where on *this* machine the data goes, and that we want every attempt written do
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,7 +26,7 @@ from esmporium.downloads import DEFAULT_PER_DATA_NODE
 from sqlmodel import Session, col, select
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Iterable
 
     from esmporium.db import DownloadPlanItem
     from esmporium.downloads import DownloadResult
@@ -34,11 +35,33 @@ if TYPE_CHECKING:
 
 IDENTITY_FACETS = ("model", "variant_label", "grid_label")
 """
-Which facets of a dataset a download is reported under
+Which facets of a dataset a download is reported under **by default**
 
 Enough to tell one CMIP7 pattern-effect download from another, which is what the
 report is for: the project, experiment, variable and frequency are the same for every
 row by construction, so printing them would be nine identical columns.
+
+Only the default. A question which spans several experiments or variables -- the
+Gregory question spans two and four -- has to name its own columns, or every one of
+its rows is described the same way. That is
+[local.endpoints.TrackedRequirement.report_facets][], which rides on
+[DownloadIntent.facets][(m).DownloadIntent.facets] and
+[local.download_formatting.DownloadGroup.facets][] to the renderers.
+"""
+
+RECORDED_FACETS = ("model", "variant_label", "grid_label", "experiment", "variable")
+"""
+Which facets are looked up and carried, whether or not they are printed
+
+A superset of [IDENTITY_FACETS][(m).] and of anything a question asks to be shown,
+deliberately: the lookup happens once, in [_identities][(m).], against rows we are
+already reading, so carrying two more strings per dataset costs nothing -- while
+*not* carrying them would mean a question could only be shown the columns someone
+thought of when the plan was made.
+
+So this is the set a renderer may choose from, and `IDENTITY_FACETS` is the set it
+chooses by default. Adding a facet here is free; a renderer asked for one that is
+not here gets `'-'`.
 """
 
 
@@ -146,8 +169,9 @@ class DatasetTally:
     """
     Which dataset it is, keyed by facet name
 
-    The keys are [IDENTITY_FACETS][(m).]. A facet the database holds as `NULL`,
-    which `grid_label` is allowed to be, reads as `'-'`.
+    The keys are [RECORDED_FACETS][(m).]; which of them a report *prints* is a
+    separate choice. A facet the database holds as `NULL`, which `grid_label` is
+    allowed to be, reads as `'-'`.
     """
 
     version: str
@@ -214,6 +238,15 @@ class DownloadIntent:
     do for a reason that has nothing to do with the download.
     """
 
+    facets: tuple[str, ...] | None = None
+    """
+    Which facets this requirement's table names a row by, or `None` for the default
+
+    Carried on the intent rather than passed to the renderer, because it is a fact
+    about the *question* -- how many experiments and variables it spans -- and the
+    renderer is handed several questions at once. See [IDENTITY_FACETS][(m).].
+    """
+
     @property
     def n_datasets(self) -> int:
         """How many dataset versions have something to fetch"""
@@ -248,6 +281,16 @@ class DownloadIntent:
         migrated. See [n_known][(c).n_known].
         """
         return not self.n_known
+
+
+IdentityLookup = Callable[
+    [Session, Sequence[int]], dict[int, tuple[Mapping[str, str], str]]
+]
+"""
+How [describe_plan][(m).] finds out which dataset each version belongs to
+
+Named so that it can be injected. See [_identities][(m).] for the real one.
+"""
 
 
 def _identities(
@@ -287,7 +330,7 @@ def _identities(
 
     return {
         version.id: (
-            {facet: getattr(dataset, facet) or "-" for facet in IDENTITY_FACETS},
+            {facet: getattr(dataset, facet) or "-" for facet in RECORDED_FACETS},
             version.version,
         )
         for version, dataset in rows
@@ -295,7 +338,7 @@ def _identities(
     }
 
 
-UNKNOWN_FACETS: Mapping[str, str] = dict.fromkeys(IDENTITY_FACETS, "-")
+UNKNOWN_FACETS: Mapping[str, str] = dict.fromkeys(RECORDED_FACETS, "-")
 """
 What to show for a dataset we could not find a row for
 
@@ -305,8 +348,14 @@ exactly the one worth seeing.
 """
 
 
-def describe_plan(
-    engine: Engine, label: str, plan: Sequence[DownloadPlanItem], *, n_known: int
+def describe_plan(  # noqa: PLR0913 - one argument per thing a plan has to be told
+    engine: Engine,
+    label: str,
+    plan: Sequence[DownloadPlanItem],
+    *,
+    n_known: int,
+    facets: tuple[str, ...] | None = None,
+    identities: IdentityLookup = _identities,
 ) -> DownloadIntent:
     """
     Tally a plan by dataset version, ready to put in front of a person
@@ -326,6 +375,18 @@ def describe_plan(
         How many files we know of for this requirement at all, fetched or not.
         See [DownloadIntent.n_known][(m).DownloadIntent.n_known].
 
+    facets
+        Which facets this requirement's table should name a row by, or `None` for
+        the renderer's default. See
+        [DownloadIntent.facets][(m).DownloadIntent.facets].
+
+    identities
+        How to look up which dataset each version belongs to. Injected so that this
+        function's own behaviour -- the grouping, the tallying, and that each
+        requirement's choice of columns survives the trip -- can be tested without a
+        database, which is how `local.summary_formatting` and `local.endpoints` are
+        tested too.
+
     Returns
     -------
     :
@@ -336,11 +397,16 @@ def describe_plan(
         grouped.setdefault(item.dataset_version_id, []).append(item)
 
     with Session(engine) as session:
-        known = _identities(session, tuple(grouped))
+        known = identities(session, tuple(grouped))
 
     tallies = []
     for dataset_version_id, items in grouped.items():
-        facets, version = known.get(dataset_version_id, (UNKNOWN_FACETS, "-"))
+        # `identity` rather than `facets`: the parameter of that name is the tuple of
+        # column *names* this requirement wants printed, and a loop variable called
+        # `facets` shadowed it -- so every intent came back carrying the last
+        # dataset's facet mapping where its column choice should have been, and every
+        # table rendered the same five columns.
+        identity, version = known.get(dataset_version_id, (UNKNOWN_FACETS, "-"))
         sized = [
             item.request.expected_size
             for item in items
@@ -349,7 +415,7 @@ def describe_plan(
         tallies.append(
             DatasetTally(
                 dataset_version_id=dataset_version_id,
-                facets=facets,
+                facets=identity,
                 version=version,
                 n_files=len(items),
                 n_bytes=sum(sized),
@@ -358,7 +424,10 @@ def describe_plan(
         )
 
     return DownloadIntent(
-        label=label, tallies=tuple(_in_reading_order(tallies)), n_known=n_known
+        label=label,
+        tallies=tuple(_in_reading_order(tallies)),
+        n_known=n_known,
+        facets=facets,
     )
 
 
@@ -566,8 +635,9 @@ class DownloadRecord:
     """
     Which dataset it belongs to, keyed by facet name
 
-    The keys are [IDENTITY_FACETS][(m).]. A facet the database holds as `NULL`, which
-    `grid_label` is allowed to be, reads as `'-'`.
+    The keys are [RECORDED_FACETS][(m).]; which of them a report *prints* is a
+    separate choice. A facet the database holds as `NULL`, which `grid_label` is
+    allowed to be, reads as `'-'`.
     """
 
     version: str
@@ -633,7 +703,7 @@ def describe_results(
 
         known = {
             file.id: (
-                {facet: getattr(dataset, facet) or "-" for facet in IDENTITY_FACETS},
+                {facet: getattr(dataset, facet) or "-" for facet in RECORDED_FACETS},
                 version.version,
                 file.filename,
                 version.id if version.id is not None else -1,

@@ -474,7 +474,7 @@ wheels = [
 [[package]]
 name = "esmporium"
 version = "0.1.2.post1"
-source = { git = "https://github.com/esmporium/esmporium.git?rev=a65d4b0cf4193e505d1492cc01b11d42c4f7db97#a65d4b0cf4193e505d1492cc01b11d42c4f7db97" }
+source = { git = "https://github.com/esmporium/esmporium.git?rev=7d03cac77cfb8ea589e515b313f7560b773ff6ad#7d03cac77cfb8ea589e515b313f7560b773ff6ad" }
 dependencies = [
     { name = "alembic" },
     { name = "httpx" },
@@ -1059,7 +1059,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "esmporium", git = "https://github.com/esmporium/esmporium.git?rev=a65d4b0cf4193e505d1492cc01b11d42c4f7db97" },
+    { name = "esmporium", git = "https://github.com/esmporium/esmporium.git?rev=7d03cac77cfb8ea589e515b313f7560b773ff6ad" },
     { name = "jupyterlab", specifier = ">=4.0.0" },
     { name = "jupytext", specifier = ">=1.15.2" },
     { name = "pandas", specifier = ">=2.2.0" },

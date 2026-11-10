@@ -926,6 +926,22 @@ class ReportGroup:
     results: tuple[EndpointResult, ...]
     """What each of its endpoints said, in the order to show them"""
 
+    facets: tuple[str, ...] | None = None
+    """
+    Which dataset facets this group's tables name a row by, or `None` for the default
+
+    The twin of [local.download_formatting.DownloadGroup.facets][], and needed for the
+    same reason one step earlier: `model`, `variant_label` and `grid_label` tell one
+    row from another only while a question asks about one variable in one experiment.
+    The Gregory question asks for four variables, so without `variable` here its
+    `ADDED` table is four identical rows per model, distinguishable only by the `id`
+    column -- which is a table that looks like a bug in the search.
+
+    Per group rather than per report because a report carries several questions and
+    they do not agree: widening it for all of them would put a column of twelve
+    identical `historical`s into the pattern-effect tables.
+    """
+
     appendix: str = ""
     """
     A rendered block to show after this group's own results, before its models
@@ -968,7 +984,9 @@ def format_report(
         How many rows of each table to show before summarising the rest
 
     facets
-        Which dataset facets the tables name rows by. `None` uses
+        Which dataset facets the tables name rows by, for the groups which do not
+        name their own. A group which sets [ReportGroup.facets][(m).ReportGroup.facets]
+        overrides it. `None` uses
         [DEFAULT_FACETS][(m).].
 
     show_current_table
@@ -985,6 +1003,13 @@ def format_report(
 
     for group in groups:
         of_group = list(group.results)
+
+        # This group's own columns if it named any, the report's default otherwise.
+        # A question asking about four variables cannot be described by the same
+        # three columns as one asking about a single variable, and widening the
+        # default for every group would put a column of identical values into the
+        # tables of the ones that do not need it.
+        columns = group.facets or facets
 
         # One coverage per group, because a tag only identifies an endpoint within
         # one question: `east` is two different searches across CMIP6 and CMIP7.
@@ -1017,7 +1042,7 @@ def format_report(
             rendered = format_summary(
                 result.summary,
                 max_rows=max_rows,
-                facets=facets,
+                facets=columns,
                 show_current_table=show_current_table,
             )
             blocks.append([title, *rendered.rstrip("\n").splitlines()])
@@ -1029,7 +1054,7 @@ def format_report(
                     of_group[0],
                     of_group[1],
                     max_rows=max_rows,
-                    facets=facets,
+                    facets=columns,
                 )
             )
 

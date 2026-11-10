@@ -77,6 +77,15 @@ MODULE_LEVEL_NAMES: dict[str, tuple[str, ...]] = {
         "Dataset",
         "DatasetVersion",
         "File",
+        # What `local.parents` walks the ancestry with, and what
+        # `local.parent_formatting` is a pure function of
+        "find_parents",
+        "ParentWalkResult",
+        "ParentSimulation",
+        "ParentVersionDecision",
+        "VariableGap",
+        "AmbiguousParent",
+        "AmbiguousParentVersion",
     ),
     "esmporium.db.migrate": ("upgrade_to_head",),
     "esmporium.downloads": (
@@ -101,7 +110,21 @@ MODULE_LEVEL_NAMES: dict[str, tuple[str, ...]] = {
         "DataNodeFetchError",
     ),
     "esmporium.query": ("Query", "QueryProtocol"),
-    "esmporium.requirements": ("Requirement", "leaf", "requirement"),
+    "esmporium.requirements": (
+        "Requirement",
+        "leaf",
+        "requirement",
+        # "and the control it branched from". `Relation` is the annotated union a
+        # leaf's `lineage` is typed as, and `Ancestors` is its only member today.
+        "Ancestors",
+        "Relation",
+        # Which facets a lineage's `until` actually sets, so `local.parents` can
+        # refuse one a walk could not be told about
+        "set_facets",
+    ),
+    # How `local.parents` reads where a lineage stops, rather than being told it
+    # separately and risking the two disagreeing
+    "esmporium.search": ("to_search_plan", "SearchPlan"),
     # What `local.endpoints` needs to ask one endpoint and only that endpoint
     "esmporium.search.search_api_facade": (
         "INBUILT_SEARCH_API_FACADE_STORE",
@@ -205,6 +228,38 @@ by hand: if you teach the renderer to read a new field, add it here, because a
 field we read and do not list is a field that can vanish silently.
 """
 
+
+PARENT_ATTRIBUTES_READ: dict[str, tuple[str, ...]] = {
+    "ParentWalkResult": (
+        "linked",
+        "terminals",
+        "variable_gaps",
+        "ambiguous",
+        "ambiguous_versions",
+        "version_decisions",
+        "searched",
+        "hops",
+    ),
+    "ParentSimulation": ("project", "model", "experiment", "variant_label"),
+    "ParentVersionDecision": (
+        "child_dataset_version_id",
+        "parent",
+        "chosen_dataset_version_id",
+        "choice",
+        "passed_over_dataset_version_ids",
+    ),
+    "VariableGap": ("child_dataset_version_id", "parent", "variable"),
+    "AmbiguousParent": ("child_dataset_version_id", "parent", "reason"),
+    "AmbiguousParentVersion": ("child_dataset_version_id", "parent", "reason"),
+}
+"""
+Every attribute of a parent-walk type `local.parent_formatting` reads
+
+The ones that matter most here are the four that are **not** failures --
+`version_decisions`, `variable_gaps`, `ambiguous` and `ambiguous_versions`. A walk
+succeeds with any of them set, so if one is renamed upstream the report quietly stops
+mentioning a whole class of missing ancestor rather than breaking.
+"""
 
 DOWNLOAD_ATTRIBUTES_READ: dict[str, tuple[str, ...]] = {
     "DownloadResult": ("request", "fetch", "failures", "skipped", "succeeded"),
@@ -464,3 +519,124 @@ def test_the_per_data_node_default_is_still_a_number_we_can_pace_a_run_with():
     # is only honest if the thing it claims to restate is still a plain count.
     assert isinstance(esmporium.downloads.DEFAULT_PER_DATA_NODE, int)
     assert esmporium.downloads.DEFAULT_PER_DATA_NODE >= 1
+
+
+@pytest.mark.parametrize(
+    ("type_name", "attribute"),
+    [
+        (type_name, attribute)
+        for type_name, attributes in PARENT_ATTRIBUTES_READ.items()
+        for attribute in attributes
+    ],
+)
+def test_the_parent_walk_types_still_carry_what_we_read(type_name, attribute):
+    parent_type = getattr(esmporium.db, type_name)
+
+    available = set(getattr(parent_type, "__dataclass_fields__", {})) | set(
+        dir(parent_type)
+    )
+
+    assert attribute in available, (
+        f"esmporium's {type_name} no longer has {attribute!r}, which "
+        "local.parent_formatting reads. Update the renderer and this list together."
+    )
+
+
+def test_a_leaf_can_still_be_given_a_lineage_without_changing_what_is_searched_for():
+    # The Gregory question's whole shape depends on this. A lineage says "and the
+    # control this branched from", and it has to do that *without* changing the query
+    # that goes out on the wire -- a search still searches for `abrupt-4xCO2` only,
+    # and climbing to the control stays the separate, explicit call
+    # `local.parents.walk_parents` makes.
+    #
+    # Local imports for the reason the tests above give: a name which moved upstream
+    # should fail one test by name, not the whole module.
+    from esmporium.query import Query  # noqa: PLC0415
+    from esmporium.requirements import (  # noqa: PLC0415
+        Ancestors,
+        leaf,
+        requirement,
+    )
+
+    query = Query(project=("CMIP7",), experiment=("abrupt-4xCO2",), variable=("tas",))
+    control = Ancestors(
+        until=Query(experiment=("piControl", "esm-piControl")), role="control"
+    )
+
+    plain = leaf(query, "gregory-east")
+    with_control = plain.with_lineage(control)
+
+    # Same question as far as ESGF is concerned.
+    assert with_control.query == plain.query
+    # A different question as far as the database is concerned, which is what makes
+    # adding a lineage cost a stem change.
+    assert (
+        requirement(
+            name="gregory", tree=with_control, group_by=("model",)
+        ).requirement_hash()
+        != requirement(
+            name="gregory", tree=plain, group_by=("model",)
+        ).requirement_hash()
+    )
+
+
+def test_putting_the_endpoint_in_the_role_still_separates_two_hosts_with_a_lineage_on():
+    # `local.endpoints` leaves the lineage's own role alone and lets the *leaf's* role
+    # carry the endpoint tag, on the grounds that `requirement_hash` covers the whole
+    # tree. If that stopped being true, east and west would collide on their
+    # fingerprint and esmporium would refuse the second of them -- so this is the
+    # assertion that lets us keep the simpler lineage role.
+    from esmporium.query import Query  # noqa: PLC0415
+    from esmporium.requirements import Ancestors, leaf, requirement  # noqa: PLC0415
+
+    query = Query(project=("CMIP7",), experiment=("abrupt-4xCO2",), variable=("tas",))
+    control = Ancestors(until=Query(experiment=("piControl",)), role="control")
+
+    east, west = (
+        requirement(
+            name=f"gregory-{tag}",
+            tree=leaf(query, f"gregory-{tag}").with_lineage(control),
+            group_by=("model", "variant_label"),
+        )
+        for tag in ("east", "west")
+    )
+
+    assert east.requirement_hash() != west.requirement_hash()
+
+
+def test_a_search_plan_still_says_where_a_lineage_stops():
+    # `local.parents.until_experiments` reads the walk's target off the requirement
+    # rather than taking it as a separate argument, precisely so the two cannot
+    # disagree. `SearchPlan.ancestry_until` is the seam that makes that possible.
+    from esmporium.query import Query  # noqa: PLC0415
+    from esmporium.requirements import Ancestors, leaf, requirement  # noqa: PLC0415
+    from esmporium.search import to_search_plan  # noqa: PLC0415
+
+    built = requirement(
+        name="gregory",
+        tree=leaf(
+            Query(project=("CMIP7",), experiment=("abrupt-4xCO2",), variable=("tas",)),
+            "gregory",
+        ).with_lineage(
+            Ancestors(
+                until=Query(experiment=("piControl", "esm-piControl")), role="control"
+            )
+        ),
+        group_by=("model",),
+    )
+
+    plan = to_search_plan(built)
+
+    assert [tuple(until.experiment) for until in plan.ancestry_until] == [
+        ("piControl", "esm-piControl")
+    ]
+    # And a requirement with no lineage says so by carrying nothing, rather than by
+    # raising or by inventing a default -- which is what lets the driver iterate every
+    # question through the same code path.
+    bare = requirement(
+        name="bare",
+        tree=leaf(Query(project=("CMIP7",), variable=("tas",)), "tas"),
+        group_by=("model",),
+    )
+
+    assert to_search_plan(bare).ancestry_until == ()

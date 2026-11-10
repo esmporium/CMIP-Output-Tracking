@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from local.downloads import RECORDED_FACETS
 from local.endpoints import requirement_for
 
 DRIVER = Path(__file__).resolve().parents[2] / "scripts" / "drive-daily.py"
@@ -41,7 +42,11 @@ def test_only_cmip7_is_downloaded(driver):
     # and we could not get them all anyway -- five of those endpoints are Solr and
     # publish no per-file URLs, so turning this on would fetch the ~460 that `east`
     # and `west` know about and say nothing at all about the rest.
-    assert [each.label for each in driver.downloading()] == ["CMIP7 tas", "CMIP7 tos"]
+    assert [each.label for each in driver.downloading()] == [
+        "CMIP7 tas",
+        "CMIP7 tos",
+        "CMIP7 gregory",
+    ]
 
 
 def test_every_requirement_is_searched_whether_or_not_it_is_fetched(driver):
@@ -63,20 +68,31 @@ def test_the_stored_requirement_names_are_the_ones_already_in_the_database(drive
 
     assert names == sorted(
         [
-            "pattern-effect-tas-mon-historical-cmip7-east",
-            "pattern-effect-tas-mon-historical-cmip7-west",
-            "pattern-effect-tas-mon-historical-cmip6-nsc",
-            "pattern-effect-tas-mon-historical-cmip6-ornl",
-            "pattern-effect-tas-mon-historical-cmip6-nci",
-            "pattern-effect-tas-mon-historical-cmip6-dkrz",
-            "pattern-effect-tas-mon-historical-cmip6-ceda",
-            "pattern-effect-tas-mon-historical-cmip6-east",
-            "pattern-effect-tas-mon-historical-cmip6-west",
-            # Added 2026-11-03. New names, not changed ones: the nine above are
-            # byte-identical to what the server's database already has, which is why
-            # adding this question needed no `DB_VERSION_ID` bump and cost no history.
-            "pattern-effect-sst-mon-historical-cmip7-east",
-            "pattern-effect-sst-mon-historical-cmip7-west",
+            # The `-g2` on these eleven is the deliberate break of 2026-11-10, and the
+            # one thing in this file that really did start again from scratch. Pointing
+            # at an esmporium whose `Leaf` carries a `lineage` changed every stored
+            # requirement's hash, and a search arriving under a held name against a
+            # different hash is refused outright -- so these had to be renamed or the
+            # job would have stopped working. See the note above `TAS_STEM`.
+            #
+            # They are the only generation suffix here, and `DB_VERSION_ID` is still
+            # `002`, which together is the whole point: search history reset, download
+            # bookkeeping kept.
+            "pattern-effect-tas-mon-historical-g2-cmip7-east",
+            "pattern-effect-tas-mon-historical-g2-cmip7-west",
+            "pattern-effect-tas-mon-historical-g2-cmip6-nsc",
+            "pattern-effect-tas-mon-historical-g2-cmip6-ornl",
+            "pattern-effect-tas-mon-historical-g2-cmip6-nci",
+            "pattern-effect-tas-mon-historical-g2-cmip6-dkrz",
+            "pattern-effect-tas-mon-historical-g2-cmip6-ceda",
+            "pattern-effect-tas-mon-historical-g2-cmip6-east",
+            "pattern-effect-tas-mon-historical-g2-cmip6-west",
+            "pattern-effect-sst-mon-historical-g2-cmip7-east",
+            "pattern-effect-sst-mon-historical-g2-cmip7-west",
+            # Added 2026-11-10, and genuinely new rather than renamed: a name nobody
+            # has stored cannot clash, so this question needed no generation suffix.
+            "gregory-toa-mon-abrupt4x-cmip7-east",
+            "gregory-toa-mon-abrupt4x-cmip7-west",
         ]
     )
 
@@ -96,9 +112,14 @@ def test_the_pattern_effect_questions_are_what_we_think_they_are(driver):
         "CMIP7 tos": ("tos", ("tavg-u-hxy-sea",)),
     }
 
-    assert {each.label for each in driver.REQUIREMENTS} == set(wanted)
+    # Scoped to the pattern-effect three on purpose. The Gregory question is not one
+    # of them -- it is a different experiment, four variables and a lineage -- and
+    # folding it in here would mean loosening every assertion below until none of
+    # them said anything. It has its own tests.
+    pattern_effect = [each for each in driver.REQUIREMENTS if each.label in wanted]
+    assert {each.label for each in pattern_effect} == set(wanted)
 
-    for tracked in driver.REQUIREMENTS:
+    for tracked in pattern_effect:
         query = tracked.query
         variable, processing_id = wanted[tracked.label]
 
@@ -106,10 +127,16 @@ def test_the_pattern_effect_questions_are_what_we_think_they_are(driver):
         assert tuple(query.experiment) == ("historical",)
         assert tuple(query.reporting_interval) == ("mon",)
         assert tuple(query.processing_id) == processing_id
+        # None of the three asks about anything but itself, so none of them needs a
+        # separate download query. If one grows a lineage, this is the assertion that
+        # should make somebody think about `download_query` before the bytes go
+        # missing.
+        assert tracked.lineage is None
+        assert tracked.download_query is None
 
 
 def test_every_requirement_has_its_own_label(driver):
-    # Not a readability check. `with_download_blocks` matches each download plan back
+    # Not a readability check. `with_appendices` matches each download plan back
     # to its search results through a dict keyed by label, so two requirements
     # sharing one would overwrite each other there and a download block would go
     # missing from the morning email -- with nothing raised and nothing logged.
@@ -126,13 +153,20 @@ def test_every_requirement_has_its_own_label(driver):
 
 
 def test_the_subject_stem_does_not_name_just_one_of_the_questions(driver):
-    # The subject line names the job, and the job is more than one question now. A
-    # subject built from either stem would read as a mail about `tas` on a morning
-    # when only `tos` moved.
+    # The subject line names the job, and the job is now three questions in two
+    # different scientific registers. A subject built from one of the stems would read
+    # as a mail about the pattern effect on a morning when only the Gregory search
+    # moved.
+    #
+    # This used to assert that every stem *started with* the subject stem, which was
+    # true while every question was a pattern-effect question and the subject stem was
+    # `pattern-effect`. It is the wrong shape now, and inverted deliberately: the
+    # subject names the job and the stems name the questions, so it should be a prefix
+    # of none of them.
     stems = {each.stem for each in driver.REQUIREMENTS}
 
     assert driver.SUBJECT_STEM not in stems
-    assert all(stem.startswith(driver.SUBJECT_STEM) for stem in stems)
+    assert not any(stem.startswith(driver.SUBJECT_STEM) for stem in stems)
 
 
 def test_the_downloads_are_paced_per_data_node(driver):
@@ -155,3 +189,98 @@ def test_the_database_both_halves_use_is_the_one_on_the_server(driver):
     # which files are already on disk.
     assert driver.DB_PATH.name == "002_db.sqlite"
     assert driver.DB_PATH.parent.name == "dbs"
+
+
+def test_the_gregory_question_is_what_we_think_it_is(driver):
+    # Four variables, one experiment, monthly, and both branding suffixes. Measured
+    # against the live archive on 2026-11-10: 24 dataset versions across 6 models.
+    #
+    # The suffixes are the load-bearing part, and for the same reason `tavg-u-hxy-sea`
+    # is on the `tos` question. Monthly `tas` is *also* published as
+    # `tminavg-h2m-hxy-u` and `tmaxavg-h2m-hxy-u` -- the monthly means of the daily
+    # minimum and maximum, different quantities under the same variable name. A query
+    # naming no suffix returns 10 `tas` versions where we want 6, and reports all ten
+    # as one requirement.
+    (gregory,) = [each for each in driver.REQUIREMENTS if each.label == "CMIP7 gregory"]
+
+    assert tuple(gregory.query.project) == ("CMIP7",)
+    assert tuple(gregory.query.variable) == ("tas", "rsdt", "rsut", "rlut")
+    assert tuple(gregory.query.experiment) == ("abrupt-4xCO2",)
+    assert tuple(gregory.query.reporting_interval) == ("mon",)
+    assert tuple(gregory.query.processing_id) == (
+        "tavg-h2m-hxy-u",
+        "tavg-u-hxy-u",
+    )
+
+
+def test_the_gregory_question_asks_for_the_control_it_branched_from(driver):
+    # A Gregory regression is of the anomaly against the control, so the control is
+    # half the measurement rather than a nice extra. Both spellings of it, because an
+    # Earth-system model's control is `esm-piControl`.
+    (gregory,) = [each for each in driver.REQUIREMENTS if each.label == "CMIP7 gregory"]
+
+    assert gregory.lineage is not None
+    assert tuple(gregory.lineage.until.experiment) == ("piControl", "esm-piControl")
+
+    # No `project` on the `until`. A walk refuses to climb across projects anyway, so
+    # naming one would only add a facet that has to match -- and the `Ancestors`
+    # docstring warns that a project-specific query style sets it for you.
+    assert not tuple(gregory.lineage.until.project)
+
+
+def test_a_question_which_walks_back_also_downloads_what_it_walked_back_to(driver):
+    # The trap this is here for. A download is planned from a *query*, and the Gregory
+    # search's query names `abrupt-4xCO2` only -- so with no `download_query` the
+    # controls would be searched for, linked, reported in the morning email, and never
+    # fetched. Nothing would raise and nothing would be logged; you would simply not
+    # have the data.
+    #
+    # `TrackedRequirement.__post_init__` refuses that combination outright, so this is
+    # belt and braces -- but it is also where the *values* are checked, which the
+    # constructor cannot do.
+    for tracked in driver.REQUIREMENTS:
+        if tracked.lineage is None or not tracked.download:
+            continue
+
+        assert tracked.download_query is not None
+        downloaded = set(tracked.download_query.experiment)
+
+        # Everything the search asks about.
+        assert set(tracked.query.experiment) <= downloaded
+        # And everywhere the lineage stops. Written as an intersection rather than a
+        # subset because `until` names both spellings of the control and only the ones
+        # that actually exist for these models have to be downloadable.
+        assert downloaded & set(tracked.lineage.until.experiment)
+
+
+def test_a_question_spanning_several_variables_names_its_own_report_columns(driver):
+    # `IDENTITY_FACETS` is model, variant and grid, which is enough only while a
+    # question asks about one variable in one experiment. The Gregory question covers
+    # four and two, so those three columns would describe eight of its rows
+    # identically -- a download table where every line looks the same.
+    for tracked in driver.REQUIREMENTS:
+        if not tracked.download:
+            continue
+
+        spans = len(tuple(tracked.download_target.variable)) > 1 or (
+            len(tuple(tracked.download_target.experiment)) > 1
+        )
+        if not spans:
+            continue
+
+        assert "variable" in tracked.report_facets
+        assert "experiment" in tracked.report_facets
+
+
+def test_the_facets_a_report_asks_for_are_ones_a_plan_actually_carries(driver):
+    # `report_facets` is read off the `Dataset` row by `local.downloads._identities`,
+    # which looks up `RECORDED_FACETS` and nothing else. A facet named here but not
+    # recorded there does not raise: it renders as `-` in every row, which reads as a
+    # database full of nulls rather than as a typo in this file.
+    for tracked in driver.REQUIREMENTS:
+        assert set(tracked.report_facets) <= set(RECORDED_FACETS), (
+            f"{tracked.label!r} asks its download report for "
+            f"{sorted(set(tracked.report_facets) - set(RECORDED_FACETS))}, which "
+            "`local.downloads._identities` does not look up. Add it to "
+            "`RECORDED_FACETS` or the column renders as '-' for every row."
+        )

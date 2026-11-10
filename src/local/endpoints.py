@@ -43,8 +43,11 @@ if TYPE_CHECKING:
 
     from esmporium.db import SearchSummary
     from esmporium.query import QueryProtocol
-    from esmporium.requirements import Requirement
-    from esmporium.search.search_api_facade import SearchAPIFacadeSelector
+    from esmporium.requirements import Relation, Requirement
+    from esmporium.search.search_api_facade import (
+        SearchAPIFacade,
+        SearchAPIFacadeSelector,
+    )
     from sqlalchemy.engine import Engine
 
 
@@ -143,20 +146,112 @@ class TrackedRequirement:
     that differs from its own previous run.
     """
 
+    lineage: Relation | None = None
+    """
+    The related datasets this question also needs, or `None` for a question which
+    stands alone
+
+    Today the only relation esmporium offers is
+    [Ancestors][esmporium.requirements.Ancestors], i.e. "and the control this run
+    branched from". It is **part of the stored fingerprint**, as load-bearing as
+    [stem][(c).stem]: adding one to a question which did not have one starts that
+    question's history from scratch.
+
+    Setting this does not by itself fetch anything, or even search for anything. A
+    search still records only what its own query matches; following the parent links
+    is the separate, explicit call [local.parents.walk_parents][] makes. See
+    [download_query][(c).download_query] for the other half anyone adding a lineage
+    has to think about.
+    """
+
+    download_query: QueryProtocol | None = None
+    """
+    What the download plans from, or `None` to use [query][(c).query]
+
+    Needed because a download is planned from a *query* rather than from a solved
+    requirement (esmporium's `plan_downloads`), and the two are not the same question
+    the moment a lineage is involved: a query naming `abrupt-4xCO2` cannot select the
+    `piControl` datasets a parent walk just went and found, however many links were
+    written. So a question which wants its ancestors' bytes has to name their
+    experiment here as well.
+
+    Report-only in the sense that matters: nothing is stored under it, so unlike
+    [stem][(c).stem] and [lineage][(c).lineage] it is **free to change**. Widening it
+    costs disk, not history.
+    """
+
+    report_facets: tuple[str, ...] = ()
+    """
+    Which facets this question's tables name a row by, or `()` for the caller's default
+
+    Both reports, deliberately one knob rather than two. The defaults
+    ([local.downloads.IDENTITY_FACETS][] and
+    [local.summary_formatting.DEFAULT_FACETS][]) are enough for a question which asks
+    about one variable in one experiment, and that is what `()` gets you. A question
+    spanning several of either has to say so, or both of its tables print rows that
+    cannot be told apart: the Gregory question covers four variables, so its `ADDED`
+    table without `variable` is four identical lines per model, and its download table
+    without `experiment` cannot show which rows are the controls.
+
+    One knob and not two because the overlap is almost total, and the cost of sharing
+    is small and in the right direction: the search report gains an `experiment`
+    column whose value is the same in every row, which is redundant rather than
+    misleading. Two knobs would be one more thing to get wrong for one saved column.
+
+    Report-only, and therefore free to change.
+    """
+
     def __post_init__(self) -> None:
         """
-        Check the endpoints and the query agree about the project
+        Check this question is internally consistent before anything uses it
 
         Raises
         ------
         ValueError
-            An endpoint names a project the query does not ask about
+            An endpoint names a project one of the queries does not ask about
 
             Cheap to check and miserable to debug: the search would be built from
             this query, sent to a facade chosen for that project, and the mismatch
             would surface as an endpoint which answers nothing for no stated reason.
+
+            Or: this question declares a lineage and wants the bytes, but says
+            nothing about where its ancestors live. See
+            [download_query][(c).download_query].
         """
-        asked = tuple(self.query.project)
+        self._check_projects_agree(self.query, "asks about")
+        if self.download_query is not None:
+            self._check_projects_agree(self.download_query, "downloads")
+
+        if self.lineage is not None and self.download and self.download_query is None:
+            msg = (
+                f"{self.label!r} has a lineage and downloads, but no "
+                "`download_query`. A download is planned from a query, and this "
+                f"one names {list(self.query.experiment)}, so the ancestors the "
+                "walk goes and finds would be linked, reported and never fetched "
+                "-- with nothing raised and nothing logged. Give it a "
+                "`download_query` which names their experiment too, e.g. "
+                'experiment=("abrupt-4xCO2", "piControl").'
+            )
+            raise ValueError(msg)
+
+    def _check_projects_agree(self, query: QueryProtocol, doing: str) -> None:
+        """
+        Check one of this question's queries agrees with its endpoints about the project
+
+        Parameters
+        ----------
+        query
+            The query to check
+
+        doing
+            What this query is for, for the message, e.g. `'asks about'`
+
+        Raises
+        ------
+        ValueError
+            An endpoint names a project `query` does not ask about
+        """
+        asked = tuple(query.project)
         wrong = sorted(
             {
                 endpoint.project
@@ -166,11 +261,31 @@ class TrackedRequirement:
         )
         if wrong:
             msg = (
-                f"{self.label!r} asks about {list(asked)} but has endpoints for "
+                f"{self.label!r} {doing} {list(asked)} but has endpoints for "
                 f"{wrong}. An endpoint is paired with a project in esmporium's "
                 "facade store, so these have to agree."
             )
             raise ValueError(msg)
+
+    @property
+    def download_target(self) -> QueryProtocol:
+        """
+        The query this question's download plans from
+
+        [download_query][(c).download_query] when it has one, and [query][(c).query]
+        otherwise, so a caller never has to remember which of the two to read.
+        """
+        return self.query if self.download_query is None else self.download_query
+
+    @property
+    def facets(self) -> tuple[str, ...] | None:
+        """
+        Which facets this question's download tables name a row by
+
+        `None` rather than `()` for "use the caller's default", because that is what
+        the renderers take. See [report_facets][(c).report_facets].
+        """
+        return self.report_facets or None
 
 
 @dataclass(frozen=True)
@@ -213,12 +328,13 @@ class EndpointResult:
         return len({version.dataset_id for version in self.summary.current})
 
 
-def endpoint_requirement(
+def endpoint_requirement(  # noqa: PLR0913 - one argument per thing a question has
     endpoint: Endpoint,
     query: QueryProtocol,
     *,
     name_stem: str,
     role_stem: str,
+    lineage: Relation | None = None,
     group_by: Sequence[str] = ("model", "variant_label"),
 ) -> Requirement:
     """
@@ -240,6 +356,10 @@ def endpoint_requirement(
     role_stem
         What the leaf's role is called, before the endpoint tag is appended
 
+    lineage
+        The relation to hang off the leaf, or `None` for a question which stands
+        alone. See [TrackedRequirement.lineage][(m).TrackedRequirement.lineage].
+
     group_by
         Passed to esmporium's `requirement`. It has no default upstream, deliberately,
         and `('model', 'variant_label')` is what our searches have wanted so far.
@@ -249,13 +369,22 @@ def endpoint_requirement(
     :
         The requirement, named and roled so that one endpoint's history is its own
     """
+    # The endpoint tag rides in the role. This is not a typo and it is not cosmetic:
+    # it is what makes this requirement hash differently from the same query asked of
+    # another host. See this module's docstring. Changing it back to a bare role
+    # silently merges every endpoint's history into one.
+    tree = leaf(query, f"{role_stem}-{endpoint.tag}")
+    if lineage is not None:
+        # The lineage's own role is left as it was given, *without* the tag. It does
+        # not need one: `requirement_hash` covers the whole tree, the leaf's role
+        # inside it already carries the tag, and so east and west still fingerprint
+        # apart. Roles only have to be unique within one requirement, and each of
+        # ours has exactly one leaf.
+        tree = tree.with_lineage(lineage)
+
     return requirement(
         name=f"{name_stem}-{endpoint.project.lower()}-{endpoint.tag}",
-        # The endpoint tag rides in the role. This is not a typo and it is not
-        # cosmetic: it is what makes this requirement hash differently from the same
-        # query asked of another host. See this module's docstring. Changing it back
-        # to a bare role silently merges every endpoint's history into one.
-        tree=leaf(query, f"{role_stem}-{endpoint.tag}"),
+        tree=tree,
         group_by=tuple(group_by),
     )
 
@@ -289,12 +418,41 @@ def requirement_for(tracked: TrackedRequirement, endpoint: Endpoint) -> Requirem
         tracked.query,
         name_stem=tracked.stem,
         role_stem=tracked.role_stem,
+        lineage=tracked.lineage,
+    )
+
+
+def facade_for(endpoint: Endpoint) -> SearchAPIFacade:
+    """
+    Look up the facade which asks `endpoint` about its project
+
+    Parameters
+    ----------
+    endpoint
+        The endpoint to look up
+
+    Returns
+    -------
+    :
+        Its facade
+
+    Raises
+    ------
+    ValueError
+        esmporium has no facade pairing this host with this project. The message lists
+        every host it does have, and which projects each supports.
+    """
+    return INBUILT_SEARCH_API_FACADE_STORE.get_api_facade_for_project_from_host(
+        endpoint.project, endpoint.host
     )
 
 
 def single_facade_selector(endpoint: Endpoint) -> SearchAPIFacadeSelector:
     """
     Build a selector which offers `endpoint` and nothing else
+
+    What a *tracked search* uses, and the reason is this module's whole premise: one
+    endpoint, one history, so one search has to be asked of exactly one host.
 
     Parameters
     ----------
@@ -312,11 +470,36 @@ def single_facade_selector(endpoint: Endpoint) -> SearchAPIFacadeSelector:
         esmporium has no facade pairing this host with this project. The message lists
         every host it does have, and which projects each supports.
     """
-    facade = INBUILT_SEARCH_API_FACADE_STORE.get_api_facade_for_project_from_host(
-        endpoint.project, endpoint.host
-    )
+    return build_list_selector([facade_for(endpoint)])
 
-    return build_list_selector([facade])
+
+def facade_selector(endpoints: Sequence[Endpoint]) -> SearchAPIFacadeSelector:
+    """
+    Build a selector which offers every one of `endpoints`, in order
+
+    The counterpart to [single_facade_selector][(m).] for the searches which are *not*
+    tracked per endpoint -- today, the parent walk. A walk writes links between
+    datasets rather than a history under a requirement's name, so there is nothing to
+    keep apart and every reason to take the failover: an ancestor is a dataset we have
+    never seen, and it can be published on a host which never answered the search that
+    found its child.
+
+    Parameters
+    ----------
+    endpoints
+        The endpoints to offer, best first. May name more than one project.
+
+    Returns
+    -------
+    :
+        A selector over their facades
+
+    Raises
+    ------
+    ValueError
+        esmporium has no facade pairing one of these hosts with its project
+    """
+    return build_list_selector([facade_for(endpoint) for endpoint in endpoints])
 
 
 def search_endpoint(

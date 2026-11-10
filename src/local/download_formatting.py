@@ -52,6 +52,15 @@ class DownloadGroup:
     totals: RunTotals
     """What its run added up to, from [esmporium.downloads.totals][]"""
 
+    facets: tuple[str, ...] | None = None
+    """
+    Which facets this requirement's tables name a row by, or `None` for the default
+
+    The twin of [local.downloads.DownloadIntent.facets][], and carried here for the
+    same reason: how many experiments and variables a question spans is a fact about
+    the question, and a report is handed several questions at once.
+    """
+
 
 _BYTES_PER_STEP = 1024.0
 """What each step of the unit ladder is worth"""
@@ -544,6 +553,10 @@ def format_download_report(
         Which facets to identify a file by, e.g.
         [local.downloads.IDENTITY_FACETS][]
 
+        The default for every group. A group which sets
+        [facets][(m).DownloadGroup.facets] of its own overrides it, so one report can
+        show a one-variable question three columns and a four-variable one five.
+
     max_rows
         How many rows of each table to show before folding the rest away
 
@@ -563,9 +576,10 @@ def format_download_report(
     for group in groups:
         blocks.append("\n".join(_headline(group, root=root)))
 
+        columns = group.facets or facets
         sections = [
-            _fetched_section(group.records, facets=facets, max_rows=max_rows),
-            _failed_section(group.records, facets=facets, max_rows=max_rows),
+            _fetched_section(group.records, facets=columns, max_rows=max_rows),
+            _failed_section(group.records, facets=columns, max_rows=max_rows),
         ]
         blocks.extend("\n".join(lines) for lines in sections if lines)
 
@@ -651,6 +665,9 @@ def format_download_intent(
     facets
         Which facets to name a dataset by, e.g. [local.downloads.IDENTITY_FACETS][]
 
+        The default for every intent. An intent which sets
+        [facets][local.downloads.DownloadIntent.facets] of its own overrides it.
+
     max_rows
         How many rows of each table to show before folding the rest away
 
@@ -702,7 +719,9 @@ def format_download_intent(
             "\n".join(
                 [
                     f"TO DOWNLOAD ({intent.label}: {counted})",
-                    *_tally_table(intent.tallies, facets, max_rows=max_rows),
+                    *_tally_table(
+                        intent.tallies, intent.facets or facets, max_rows=max_rows
+                    ),
                     f"  into {root}",
                 ]
             )

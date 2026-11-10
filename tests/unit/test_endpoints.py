@@ -9,12 +9,14 @@ import re
 
 import pytest
 from esmporium.query import Query
+from esmporium.requirements import Ancestors, role_paths
 
 from local.endpoints import (
     Endpoint,
     EndpointResult,
     TrackedRequirement,
     endpoint_requirement,
+    facade_selector,
     requirement_for,
     search_endpoint,
     single_facade_selector,
@@ -251,3 +253,207 @@ def test_only_requirements_asking_to_be_downloaded_say_so():
     # accident, and must not take a block of the report it did not ask for.
     assert not watched.download
     assert not watched.detailed
+
+
+TO_CONTROL = Ancestors(
+    until=Query(experiment=("piControl", "esm-piControl")), role="control"
+)
+"""A lineage shaped like the Gregory question's"""
+
+ABRUPT = Query(
+    project=("CMIP7",),
+    variable=("tas", "rsdt"),
+    experiment=("abrupt-4xCO2",),
+    reporting_interval=("mon",),
+)
+"""A query a lineage can legally hang off: it selects no `piControl` of its own"""
+
+
+def with_control(endpoint):
+    """
+    Build the requirement one endpoint asks about the Gregory question
+
+    Parameters
+    ----------
+    endpoint
+        The endpoint to build it for
+
+    Returns
+    -------
+    :
+        The requirement, with a lineage on its leaf
+    """
+    return endpoint_requirement(
+        endpoint,
+        ABRUPT,
+        name_stem="gregory-toa-mon-abrupt4x",
+        role_stem="gregory",
+        lineage=TO_CONTROL,
+    )
+
+
+def test_a_lineage_reaches_the_leaf_of_the_built_requirement():
+    built = with_control(EAST)
+
+    assert built.tree.lineage == TO_CONTROL
+    # The role path the lineage adds, which is how a later check refers to the
+    # control it found.
+    assert sorted(role_paths(built.tree)) == ["control.gregory-east", "gregory-east"]
+
+
+def test_the_lineage_role_is_left_alone_and_the_leaf_role_carries_the_tag():
+    # Deliberate, and the one place this repository departs from "the tag rides in
+    # the role". It does not need to ride in *both*: `requirement_hash` covers the
+    # whole tree, the leaf's role inside it already carries the tag, so east and west
+    # fingerprint apart regardless -- and roles only have to be unique within one
+    # requirement, which has one leaf.
+    east = with_control(EAST)
+
+    assert east.tree.lineage.role == "control"
+    assert east.tree.role == "gregory-east"
+
+
+def test_two_endpoints_are_still_two_requirements_with_a_lineage_on():
+    # The assertion that lets the simpler lineage role above stand. If this failed,
+    # east and west would collide on their fingerprint and esmporium would refuse the
+    # second of them -- which `search_endpoint` would report as that endpoint being
+    # down, for a reason that has nothing to do with the endpoint.
+    assert (
+        with_control(EAST).requirement_hash() != with_control(WEST).requirement_hash()
+    )
+
+
+def test_a_lineage_does_not_change_what_goes_out_on_the_wire():
+    # A search still searches for `abrupt-4xCO2` only. Climbing to the control is the
+    # separate, explicit call `local.parents` makes, and if a lineage ever started
+    # widening the query this is where it would show.
+    plain = endpoint_requirement(
+        EAST, ABRUPT, name_stem="gregory-toa-mon-abrupt4x", role_stem="gregory"
+    )
+
+    assert with_control(EAST).tree.query == plain.tree.query
+
+
+def test_a_tracked_question_hands_its_lineage_to_every_endpoint():
+    tracked = TrackedRequirement(
+        label="CMIP7 gregory",
+        stem="gregory-toa-mon-abrupt4x",
+        role_stem="gregory",
+        query=ABRUPT,
+        download_query=Query(
+            project=("CMIP7",),
+            variable=("tas", "rsdt"),
+            experiment=("abrupt-4xCO2", "piControl"),
+            reporting_interval=("mon",),
+        ),
+        endpoints=(EAST, WEST),
+        lineage=TO_CONTROL,
+        download=True,
+    )
+
+    assert all(
+        requirement_for(tracked, endpoint).tree.lineage == TO_CONTROL
+        for endpoint in tracked.endpoints
+    )
+
+
+def test_a_question_which_walks_back_but_cannot_download_what_it_finds_is_refused():
+    # The trap. A download is planned from a query, so without a `download_query` the
+    # controls would be searched for, linked, reported -- and never fetched, with
+    # nothing raised and nothing logged. Refused at construction instead.
+    with pytest.raises(ValueError, match="no `download_query`"):
+        TrackedRequirement(
+            label="CMIP7 gregory",
+            stem="gregory-toa-mon-abrupt4x",
+            role_stem="gregory",
+            query=ABRUPT,
+            endpoints=(EAST,),
+            lineage=TO_CONTROL,
+            download=True,
+        )
+
+
+def test_a_question_which_only_watches_its_ancestry_needs_no_download_query():
+    # The same question with `download=False` is fine: nothing is being promised, so
+    # nothing can go missing.
+    tracked = TrackedRequirement(
+        label="CMIP7 gregory",
+        stem="gregory-toa-mon-abrupt4x",
+        role_stem="gregory",
+        query=ABRUPT,
+        endpoints=(EAST,),
+        lineage=TO_CONTROL,
+        download=False,
+    )
+
+    assert tracked.download_query is None
+    assert tracked.download_target is tracked.query
+
+
+def test_a_download_query_naming_another_project_than_its_endpoints_is_refused():
+    # The same check the search query has always had, applied to the second query. A
+    # download query for CMIP6 under CMIP7 endpoints would plan from rows those
+    # endpoints never wrote and find nothing, for no stated reason.
+    with pytest.raises(ValueError, match="downloads"):
+        TrackedRequirement(
+            label="CMIP7 gregory",
+            stem="gregory-toa-mon-abrupt4x",
+            role_stem="gregory",
+            query=ABRUPT,
+            download_query=Query(project=("CMIP6",), variable=("tas",)),
+            endpoints=(EAST,),
+            lineage=TO_CONTROL,
+            download=True,
+        )
+
+
+def test_the_download_target_is_the_download_query_when_there_is_one():
+    tracked = TrackedRequirement(
+        label="CMIP7 gregory",
+        stem="gregory-toa-mon-abrupt4x",
+        role_stem="gregory",
+        query=ABRUPT,
+        download_query=Query(
+            project=("CMIP7",),
+            variable=("tas", "rsdt"),
+            experiment=("abrupt-4xCO2", "piControl"),
+        ),
+        endpoints=(EAST,),
+        lineage=TO_CONTROL,
+        download=True,
+    )
+
+    assert tuple(tracked.download_target.experiment) == (
+        "abrupt-4xCO2",
+        "piControl",
+    )
+
+
+def test_report_facets_are_none_rather_than_empty_when_unset():
+    # `None` is what the renderers read as "use your default"; `()` would be read as
+    # "show no columns at all", which renders a table of bare ids.
+    tracked = TrackedRequirement(
+        label="CMIP7 tas",
+        stem="pattern-effect",
+        role_stem="tas",
+        query=QUERY,
+        endpoints=(EAST,),
+    )
+
+    assert tracked.facets is None
+
+
+def test_a_walk_s_selector_offers_every_endpoint_in_order():
+    # Unlike a tracked search, which must be asked of exactly one host, a parent walk
+    # takes the failover: an ancestor is a dataset we have never seen and can be
+    # published on a host which never answered the search that found its child.
+    selector = facade_selector((EAST, WEST))
+
+    assert selector(None, 0).search_api.host == "search.east.esgf.io"
+    assert selector(None, 1).search_api.host == "search.west.esgf.io"
+    assert selector(None, 2) is None
+
+
+def test_a_walk_s_selector_refuses_a_host_esmporium_cannot_serve():
+    with pytest.raises(ValueError, match=re.escape("search.east.esgf.io")):
+        facade_selector((EAST, Endpoint("CMIP5", "search.east.esgf.io", "east")))

@@ -8,10 +8,12 @@ from dataclasses import replace
 from pathlib import PurePosixPath
 
 import pytest
-from esmporium.db import DatasetChangeType
+from esmporium.db import DatasetChangeType, ParentSimulation, ParentWalkResult
 
 from local.download_formatting import format_download_intent
 from local.downloads import IDENTITY_FACETS, DatasetTally, DownloadIntent
+from local.parent_formatting import format_parent_walks
+from local.parents import ParentWalk
 from local.summary_formatting import (
     PATTERN_EFFECT_FACETS,
     ReportGroup,
@@ -135,7 +137,7 @@ def with_plans(groups, intents):
     """
     Hang each group's download plan inside its own section
 
-    The same matching `drive-daily.with_download_blocks` does, and by label for the
+    The same matching `drive-daily.with_appendices` does, and by label for the
     same reason -- which is also why the driver's labels have to be distinct.
     """
     by_label = {intent.label: intent for intent in intents}
@@ -523,6 +525,219 @@ def test_a_morning_with_nothing_to_download(
         ],
         summary_scenes,
         intents=(DownloadIntent(label=TAS_LABELS["CMIP7"], tallies=(), n_known=325),),
+    )
+
+    file_regression.check(rendered, extension=".txt")
+
+
+GREGORY_LABEL = "CMIP7 gregory"
+"""What the driver calls the Gregory question"""
+
+GREGORY_COLUMNS = ("model", "variant_label", "experiment", "variable")
+"""
+The columns that question's download table asks for
+
+Four, where the pattern-effect questions take three. It spans two experiments and
+four variables, so `grid_label` is the column it can spare and `experiment` and
+`variable` are the two it cannot: without them, eight of its rows read identically.
+"""
+
+GREGORY_MODELS = (
+    ("ACCESS-ESM1-6", "r1i1p1f1", "g115"),
+    ("CanESM6-0-MR", "r1i1p1f1", "g150"),
+    ("UKCM2a-0-HH", "r1i1p1f1", "g137"),
+)
+"""
+Three of the six models which publish CMIP7 monthly `abrupt-4xCO2`
+
+Real names and real grids, taken from the live archive on 2026-11-10. `UKCM2a-0-HH`
+is here because it is the one that matters to a reader: it is 39 of the 61 GB this
+question wants, which is the sort of thing a download plan exists to let somebody
+notice before it starts.
+"""
+
+
+def with_ancestry_and_plans(groups, walks, intents):
+    """
+    Hang each group's ancestry block and download plan inside its own section
+
+    Mirrors `drive-daily.with_appendices`, including the order: the ancestry goes
+    above the plan, because the plan is partly a consequence of it -- "we walked back
+    to six controls" and then "and here is what that costs".
+
+    Parameters
+    ----------
+    groups
+        The search results, one group per question
+
+    walks
+        What came of following each lineage
+
+    intents
+        What each downloading question is about to fetch
+
+    Returns
+    -------
+    :
+        The groups, with their appendices
+    """
+    plans = {intent.label: intent for intent in intents}
+    ancestry = {walk.label: walk for walk in walks}
+
+    appended = []
+    for group in groups:
+        blocks = []
+        if group.label in ancestry:
+            blocks.append(format_parent_walks([ancestry[group.label]], max_rows=50))
+
+        if group.label in plans:
+            blocks.append(
+                format_download_intent(
+                    [plans[group.label]],
+                    root=DOWNLOAD_ROOT,
+                    facets=IDENTITY_FACETS,
+                    max_rows=50,
+                )
+            )
+
+        written = [block.strip("\n") for block in blocks if block.strip()]
+        appended.append(
+            replace(group, appendix="\n\n".join(written)) if written else group
+        )
+
+    return tuple(appended)
+
+
+@pytest.fixture
+def gregory_datasets(summary_scenes):
+    """
+    Get the datasets the Gregory search returns, as a run saw them
+
+    Four variables per model, which is what makes this question's tables look
+    different from every other one in this file: the same model and variant appears
+    four times over, and only the variable tells the rows apart.
+    """
+    return tuple(
+        summary_scenes.version(
+            model,
+            "abrupt-4xCO2",
+            variant,
+            1230 + index,
+            grid_label=grid,
+            variable=variable,
+            version_string="20260901",
+            data_nodes=("esgf.nci.org.au",),
+        )
+        for index, ((model, variant, grid), variable) in enumerate(
+            (each, variable)
+            for each in GREGORY_MODELS
+            for variable in ("tas", "rsdt", "rsut", "rlut")
+        )
+    )
+
+
+def test_a_morning_the_ancestry_was_walked(
+    file_regression, summary_scenes, gregory_datasets
+):
+    """
+    The first morning of the Gregory question: a search, a parent walk and 56 GB
+
+    The layout this is here to settle. This question answers a question none of the
+    others do -- "and the control it branched from" -- and the walk that answers it
+    is neither a search result nor a download, so it needed somewhere of its own to
+    go. It rides in the group's appendix, above the download plan.
+
+    The clean case, deliberately, because the clean case is the one that has to be
+    readable: every chain reached `piControl` in one hop and nothing had to be
+    decided or guessed. The sections that only appear when something went sideways --
+    a release picked by a rule of ours, a control missing one of the four fluxes, a
+    parent nothing could choose between -- are covered in
+    `tests/unit/test_parent_formatting.py`, where they can be shown one at a time.
+
+    Note the download table: four columns where the pattern-effect questions take
+    three, and `experiment` and `variable` among them. The plan reaches back to
+    datasets the search never returned, which is the whole point of the walk, and
+    without those two columns the piControl rows would be indistinguishable from the
+    `abrupt-4xCO2` ones.
+    """
+    controls = tuple(
+        ParentSimulation(
+            project="CMIP7", model=model, experiment="piControl", variant_label=variant
+        )
+        for model, variant, _ in GREGORY_MODELS
+    )
+
+    groups = (
+        ReportGroup(
+            label=GREGORY_LABEL,
+            detailed=True,
+            results=tuple(
+                summary_scenes.result(
+                    tag,
+                    requirement_name=f"gregory-toa-mon-abrupt4x-cmip7-{tag}",
+                    current=gregory_datasets,
+                    changes=tuple(
+                        summary_scenes.change(ADDED, of=each)
+                        for each in gregory_datasets
+                    ),
+                    # A question nobody has asked before has no baseline to have
+                    # changed against, so this reads as a first run rather than as
+                    # twelve additions.
+                    baseline_run_id=None,
+                    window_runs=(7,),
+                )
+                for tag in ("east", "west")
+            ),
+            # Without this the ADDED table is four identical lines per model,
+            # distinguishable only by the `id` column -- which reads as a bug in the
+            # search rather than as four variables of one simulation.
+            facets=GREGORY_COLUMNS,
+        ),
+    )
+
+    rendered = render(
+        with_ancestry_and_plans(
+            groups,
+            walks=(
+                ParentWalk(
+                    label=GREGORY_LABEL,
+                    n_started_from=len(gregory_datasets),
+                    result=ParentWalkResult(
+                        linked=["link"] * len(gregory_datasets),
+                        terminals=list(controls),
+                        searched=list(controls),
+                        hops=1,
+                    ),
+                    failure=None,
+                ),
+            ),
+            intents=(
+                DownloadIntent(
+                    label=GREGORY_LABEL,
+                    tallies=tuple(
+                        DatasetTally(
+                            dataset_version_id=each.dataset_version_id,
+                            facets={
+                                "model": each.facets["model"],
+                                "variant_label": each.facets["variant_label"],
+                                "grid_label": each.facets["grid_label"],
+                                "experiment": each.facets["experiment"],
+                                "variable": each.facets["variable"],
+                            },
+                            version=each.version,
+                            n_files=n_files,
+                            n_bytes=n_files * 23_300_000,
+                        )
+                        for each, n_files in zip(
+                            gregory_datasets,
+                            (33, 33, 33, 33, 3, 3, 3, 3, 15, 15, 15, 15),
+                        )
+                    ),
+                    n_known=276,
+                    facets=GREGORY_COLUMNS,
+                ),
+            ),
+        )
     )
 
     file_regression.check(rendered, extension=".txt")

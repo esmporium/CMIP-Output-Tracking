@@ -80,11 +80,19 @@ That will:
 1. create and migrate `dbs/002_db.sqlite` if it is not there yet;
 2. search ESGF for every requirement in the driver script, at every endpoint;
 3. save every result into the database, and record each search itself;
-4. work out what there is to download — a database read, no network;
-5. **email** what changed since the last complete run, and what is about to be
-   fetched;
-6. download it, checking each file's published size and checksum as it lands;
-7. **email** what arrived.
+4. for the questions which ask about where their runs came from, **walk back up the
+   parent chain** to the control they branched from, searching for the ancestors we
+   do not already hold;
+5. work out what there is to download — a database read, no network;
+6. **email** what changed since the last complete run, what the walk found, and what
+   is about to be fetched;
+7. download it, checking each file's published size and checksum as it lands;
+8. **email** what arrived.
+
+Step 4 is where it is because it is the only place it fits. A walk writes rows for
+datasets the search never returned, and both the plan in step 5 and the email in
+step 6 have to be able to see them. It costs a handful of searches rather than a
+download, so it does not make the morning mail late.
 
 The first run has nothing to compare against, so it reports everything it found
 as "added". Every run after that reports the difference.
@@ -93,10 +101,20 @@ Either half can be run on its own, which is what you want when retrying a downlo
 that failed without waiting for tomorrow:
 
 ```sh
-make run-search-only       # search and email; download nothing
+make run-search-only       # search, walk the ancestry, email; download nothing
 make run-downloads-only    # download what the last search found; do not search
 make downloads-dry-run     # say what would be fetched, fetch nothing, email nothing
 ```
+
+There is also `--skip-parents`, for re-running a search without paying for the walk
+again:
+
+```sh
+uv run python scripts/drive-daily.py --search-only --skip-parents
+```
+
+Note what it costs you: a download planned afterwards does not know about ancestors
+nobody has walked to yet, so it will not fetch them.
 
 ### Why there are two emails and not one
 
@@ -115,11 +133,16 @@ It sits inside its own question's section, before that question's model-support
 table, because that table reads as the section's closing line and something
 actionable underneath it would be read last or not at all.
 
-Both emails are subject-lined `pattern-effect: ...` — the job's name, not any one
-question's. There are three questions now and a subject built from one of their
-stems would read as a mail about `tas` on a morning when only `tos` moved. The
-constant is `SUBJECT_STEM`; **it is what a mail filter matches on**, so changing it
-is a thing to go and fix in Gmail too.
+Both emails are subject-lined `cmip-tracking: ...` — the job's name, not any one
+question's. There are four questions now, in two different scientific registers, and
+a subject built from one of their stems would read as a mail about the pattern effect
+on a morning when only the Gregory search moved. The constant is `SUBJECT_STEM`;
+**it is what a mail filter matches on**, so changing it is a thing to go and fix in
+Gmail too.
+
+> It was `pattern-effect` until 2026-11-10. **If a Gmail filter is matching on that,
+> it has stopped catching these emails** and wants pointing at `cmip-tracking`
+> instead.
 
 The `id` is the same number the `ADDED` table shows, which is the point of it being
 there: a dataset that turned up overnight can be followed straight into the download
@@ -140,6 +163,89 @@ The second email is skipped when nothing was fetched and nothing failed
 (`EMAIL_WHEN_NOTHING_DOWNLOADED`), because the first one has already said there was
 nothing to do.
 
+## The ancestry half
+
+Some questions are not answered by what their own query matches. A Gregory
+regression is of the *anomaly* against the control, so the control is not a nice
+extra — it is half the measurement. A `TrackedRequirement` says so by carrying a
+`lineage`:
+
+```python
+lineage=Ancestors(until=UNTIL_PICONTROL, role="control"),
+```
+
+and that is the whole declaration. Where it stops is read back off the requirement
+rather than passed separately (`local.parents.until_experiments`), so the thing the
+walk is told and the thing the requirement asks for cannot drift apart.
+
+A search still searches for `abrupt-4xCO2` and nothing else — a lineage does not
+widen a query. Climbing the chain is a separate, explicit call, and it reports like
+this:
+
+```text
+CMIP7 gregory -- ancestry
+  Walked back from 24 dataset version(s): 24 link(s) written, 1 hop(s), 6 search(es) fired
+  Chains stopped at (6):
+    model          experiment  variant
+    ACCESS-ESM1-6  piControl   r1i1p1f1
+    CanESM5-1      piControl   r1i1p2f1
+    ...
+```
+
+That block rides in the question's own section, above its download plan, because the
+plan is partly a consequence of it: *"we walked back to six controls"*, and then
+*"and here is the 35 GB that costs"*.
+
+### What to actually read in that block
+
+The counts are the easy part. The sections worth the space are the ones that only
+appear when something went sideways — and **none of them is a failure**, which is
+exactly why they have to be visible:
+
+- **"Parent release decided by us"** — the parent dataset was published more than
+  once and a rule of ours picked which release to use. It is the only figure in
+  either email that rests on a judgement we made rather than on something the
+  archive published. Note that the releases passed over are often all *newer* than
+  the child, which reads as a run branching from data that did not exist yet; a
+  version string is a publication date, not a run date.
+- **"Ancestor does not publish the variable"** — the control exists, the link is
+  written, and that model is short one of the four fluxes. The walk succeeded; the
+  science did not.
+- **"Could not be chosen, so not climbed through"** — nothing could tell two
+  candidate parents apart, so the walk did not climb, so that ancestor is missing.
+
+A walk which raises says so and carries on. It raises once at the end with every
+failed chain on it, and it commits once per hop — so the links it managed are
+already in the database and the next run picks up where it left off. The failure is
+reported and the download goes ahead, for the same reason one endpoint being down
+does not cost us the other eight.
+
+### Downloading what you walked back to
+
+**This is the part that is easy to get wrong, and it has a tripwire.** A download is
+planned from a *query*, and the Gregory search's query names `abrupt-4xCO2`. So
+without a second query the controls would be searched for, linked, reported in the
+morning email — and never fetched, with nothing raised and nothing logged. Hence
+`download_query`:
+
+```python
+query=Query(..., experiment=("abrupt-4xCO2",)),
+download_query=Query(..., experiment=("abrupt-4xCO2", "piControl")),
+```
+
+`TrackedRequirement.__post_init__` refuses a question which has a lineage and
+`download=True` but no `download_query`, so the failure mode is a `ValueError` at
+startup rather than data you do not have.
+
+One thing to know about what ends up in the database. The walk's search for a parent
+can only name the simulation and the variables its children need — not the frequency
+or the branded variable — so it ingests every frequency of those four variables for
+each control it finds: about 45 dataset versions and 3000 file rows where we download
+24. That is rows, not bytes; the download query is what keeps it to the monthly
+`tavg-*` ones. If `download_query` ever loses its `reporting_interval` or
+`processing_id`, the dry run says 646 GB instead of 57 GB, which is the number to
+watch for.
+
 ## The download half
 
 Where the search finds out what exists, this fetches the bytes. It runs in the same
@@ -153,11 +259,11 @@ make downloads-dry-run      # say what it would fetch, and fetch nothing
 It reports like this:
 
 ```text
-pattern-effect-tas-mon-historical · CMIP7 tas
+pattern-effect-tas-mon-historical-g2 · CMIP7 tas
   0 file(s): 0 fetched, 0 already here, 0 failed
   0 B moved into /data/cmip7-scratch
 
-pattern-effect-sst-mon-historical · CMIP7 tos
+pattern-effect-sst-mon-historical-g2 · CMIP7 tos
   270 file(s): 270 fetched, 0 already here, 0 failed
   18.4 GB moved into /data/cmip7-scratch
 
@@ -221,20 +327,31 @@ everything from day one, and a part-downloaded file is resumed rather than resta
 ### Which questions it fetches
 
 `download=True` on a `TrackedRequirement` in `scripts/drive-daily.py`. Today that is
-**both CMIP7 questions** — `tas` and `tos` — and neither CMIP6 one.
+**all three CMIP7 questions** — `tas`, `tos` and the Gregory search — and neither
+CMIP6 one.
 
-| question | variable | branded as | how much, at east | |
-| --- | --- | --- | --- | --- |
-| CMIP7 `tas` | `tas` | `tavg-h2m-hxy-u` | 47 datasets, 325 files, 22.7 GB | fetched |
-| CMIP7 `tos` | `tos` | `tavg-u-hxy-sea` | 43 datasets, 270 files, 18.4 GB | fetched |
-| CMIP6 `tas` | `tas` | `Amon` | ~1140 dataset versions | watched |
+| question | variable | branded as | experiment | how much, at east | |
+| --- | --- | --- | --- | --- | --- |
+| CMIP7 `tas` | `tas` | `tavg-h2m-hxy-u` | `historical` | 47 datasets, 325 files, 22.7 GB | fetched |
+| CMIP7 `tos` | `tos` | `tavg-u-hxy-sea` | `historical` | 43 datasets, 270 files, 18.4 GB | fetched |
+| CMIP7 gregory | `tas`, `rsdt`, `rsut`, `rlut` | `tavg-h2m-hxy-u`, `tavg-u-hxy-u` | `abrupt-4xCO2` **and its `piControl` parents** | 48 datasets, 934 files, 56.6 GB | fetched |
+| CMIP6 `tas` | `tas` | `Amon` | `historical` | ~1140 dataset versions | watched |
 
-(Measured against the live archive on 2026-11-03.)
+(The first two measured against the live archive on 2026-11-03, the Gregory question
+on 2026-11-10.)
 
-Both CMIP7 questions download into the same `DOWNLOAD_ROOT`. Nothing has to be done
+Every CMIP7 question downloads into the same `DOWNLOAD_ROOT`. Nothing has to be done
 to keep them apart: esmporium's layout puts a file under its own dataset id, and the
-variable is part of that, so the two never collide and `make data-node-health`
-covers both at once.
+variable and experiment are part of that, so they never collide and
+`make data-node-health` covers them all at once.
+
+**The Gregory question is more than half of that total, and most of it is the
+controls.** 21.2 GB is `abrupt-4xCO2` and the other ~35 GB is the `piControl` runs
+the walk goes and finds — a control is a long run, and four variables of a long run
+is a lot of monthly data. One model, `UKCM2a-0-HH`, is on its own about 39 GB of the
+61 GB those four variables come to across both experiments; it is high-resolution and
+there is nothing wrong with it, but it is the thing to look at first if the disk
+becomes a problem.
 
 **`tos` is the lighter of the two, which was not the expectation going in.** Each
 file is within a per-cent of a `tas` file's size; there are simply fewer of them.
@@ -467,8 +584,9 @@ netCDF, or a full disk on whichever volume the repository happens to sit on.
 `DownloadSettings.from_env()` raises `MissingDownloadSettingError` naming the
 variable, which is the message you want when you are reading it out of a cron log.
 
-Check there is room before the first run. It is ~41 GB today, across both CMIP7
-questions:
+Check there is room before the first run. It is ~98 GB today, across the three
+CMIP7 questions — 22.7 GB of `tas`, 18.4 GB of `tos` and 56.6 GB for the Gregory
+search and the controls it walks back to:
 
 ```sh
 df -h /data
@@ -548,11 +666,12 @@ make run-search-only
 df -h /data
 make downloads-dry-run
 
-# 4. The initial download. ~41 GB over a few hours the first time (22.7 GB of
-#    `tas` and 18.4 GB of `tos`); a handful of files, in seconds, every time
-#    after. Eight files move at once, capped at four per data node. Run it under
-#    `tmux` -- it is resumable, so losing the ssh session is survivable, but there
-#    is no reason to find out.
+# 4. The initial download. ~98 GB over several hours the first time (22.7 GB of
+#    `tas`, 18.4 GB of `tos`, and 56.6 GB for the Gregory search including the
+#    `piControl` runs it walks back to); a handful of files, in seconds, every
+#    time after. Eight files move at once, capped at four per data node. Run it
+#    under `tmux` -- it is resumable, so losing the ssh session is survivable, but
+#    there is no reason to find out.
 tmux new -s download
 make run-downloads-only          # detach with ctrl-b then d
 
@@ -653,9 +772,24 @@ The requirement's **name** is the key its whole history hangs off: it is what th
 database files the search under, and what the summary is read back out by.
 esmporium deliberately refuses to let a search change meaning without changing
 name, so if you edit the query you must either change that requirement's stem
-(`TAS_STEM` or `SST_STEM`) or bump `DB_VERSION_ID` to start a fresh database. If you
-do not, the next run will stop with a `RequirementNameInUseError` rather than
-quietly comparing apples with oranges.
+(`TAS_STEM`, `SST_STEM` or `GREGORY_STEM`) or bump `DB_VERSION_ID` to start a fresh
+database. If you do not, the next run will stop with a `RequirementNameInUseError`
+rather than quietly comparing apples with oranges.
+
+**Reach for the stem, not the database version, and know why.** A new stem restarts
+that one question's search history and nothing else: the dataset, file and download
+rows are keyed by the data rather than by the question, so everything already on disk
+stays accounted for. A bumped `DB_VERSION_ID` restarts all of it — including the
+`Download` rows, which are the only record of what we hold. `plan_downloads` needs
+the row *and* the file on disk and treats a file with no row as one to fetch again,
+so bumping the version on a server that has downloaded anything means downloading it
+all over again.
+
+That is the whole reason every stem here carries a `-g2`. Pointing at the esmporium
+commit that gave `Leaf` a `lineage` changed every stored requirement's hash, because
+`requirement_hash` covers the whole tree — so all eleven existing searches had to be
+renamed or the job would have stopped working. Search history reset, download
+bookkeeping kept, and `DB_VERSION_ID` still `002`.
 
 Run `make downloads-dry-run` after widening anything. A query that matches more
 than you expected is a search that reports a longer table and a download that
@@ -675,9 +809,10 @@ Adding another `TrackedRequirement` to `REQUIREMENTS`, which is a cheaper change
 than editing an existing one: a new name is a new history, so nothing has to be
 reset and `DB_VERSION_ID` stays where it is. The search loop, the download loop,
 both emails and both reports all iterate that list, so nothing else has to learn
-about it. CMIP7 `tos` was added this way on 2026-11-03.
+about it. CMIP7 `tos` was added this way on 2026-11-03, and the Gregory question on
+2026-11-10.
 
-Four things to get right, all of which have a test to catch them:
+Five things to get right, all of which have a test to catch them:
 
 1. **Its own stem.** A new question means a new `*_STEM` constant. Sharing one with
    an existing question would file both under the same requirement name, and
@@ -693,7 +828,24 @@ Four things to get right, all of which have a test to catch them:
    is a different quantity under the same variable name). A query naming neither
    fetches both and reports them as one requirement. Check against the live archive
    rather than guessing.
-4. **A first download done by hand.** See below.
+
+   The Gregory question is the same trap twice over. Monthly `tas` is published as
+   `tavg-h2m-hxy-u` *and* as `tminavg-h2m-hxy-u` and `tmaxavg-h2m-hxy-u` — the
+   monthly means of the daily minimum and maximum — so naming no suffix returns 10
+   `tas` dataset versions where 6 are wanted.
+4. **Its own report columns, if it spans more than one of anything.**
+   `report_facets` on the requirement. The defaults are model, variant and grid,
+   which tell one row from another only while a question asks about one variable in
+   one experiment. The Gregory question asks for four variables, so without
+   `variable` its `ADDED` table is four identical lines per model, distinguishable
+   only by the `id` column — a table that reads as a bug in the search. One knob
+   feeds both reports.
+5. **A first download done by hand.** See below.
+
+And if the new question carries a `lineage`, a sixth: **a `download_query` that
+names where the lineage stops.** See "Downloading what you walked back to" above.
+That one is refused at startup rather than merely tested, because the symptom is
+otherwise data you simply do not have.
 
 Then `make test`, which will fail in `tests/unit/test_driver_config.py` until the
 new requirement's stored names are written down there — that file is the record of
@@ -783,10 +935,19 @@ when it finishes; that is the thing to pin.
 
 `tests/unit/test_esmporium_contract.py` is what makes this safe to do often. It
 names every piece of esmporium's public surface this repository relies on -- the
-functions we import, and every field of a `SearchSummary` the renderer reads --
-and fails by name the moment one of them moves. Without it, the first symptom of a
-rename upstream is a cron job that sends no email, which looks exactly like a
-morning on which nothing changed.
+functions we import, and every field of a `SearchSummary`, a download result or a
+parent walk the renderers read -- and fails by name the moment one of them moves.
+Without it, the first symptom of a rename upstream is a cron job that sends no
+email, which looks exactly like a morning on which nothing changed.
+
+It cannot catch everything, and it is worth knowing what it misses. A bump which
+changes a stored requirement's **fingerprint** rather than a name passes every test
+here and then refuses to run against the real database: that is what happened on
+2026-11-10, when `Leaf` gained a `lineage`. The symptom is a
+`RequirementNameInUseError` per endpoint, reported in the morning email as every
+endpoint having failed. The fix is a new generation on every stem -- see "Change
+what is searched for" -- and the thing *not* to do is bump `DB_VERSION_ID`, which
+also forgets every file already on disk.
 
 When a name there does legitimately change upstream, fix the renderer and that
 file in the same commit. Loosening the tripwire to make a bump pass is worse than
@@ -804,11 +965,19 @@ history is no longer comparable. It is not the schema version — esmporium migr
 the schema itself, on every run.
 Bumping it leaves the old database on disk, so nothing is thrown away.
 
-**Bumping it now costs more than it used to.** The database is what remembers which
-files we already have, so a fresh one does not know about the ~41 GB of netCDF
-sitting under `DOWNLOAD_ROOT`. The next download run would re-fetch all of it. If you do
-need to bump it, either point `DOWNLOAD_ROOT` somewhere new as well, or expect the
-first download against the new database to be the bulk run again.
+**Bumping it now costs more than it used to, and it is almost never what you
+want.** The database is what remembers which files we already have — specifically
+the `Download` rows, which `plan_downloads` requires *as well as* the file being on
+disk before it will skip one. A fresh database has none, so it does not know about
+the ~98 GB of netCDF sitting under `DOWNLOAD_ROOT` and the next run re-fetches all
+of it.
+
+So if what you actually want is for a search's history to start again — which is the
+usual reason to reach for this — **change that question's stem instead**. The stem
+resets one question's history and keeps every dataset, file and download row. See
+"Change what is searched for". If you really do need to bump the version, either
+point `DOWNLOAD_ROOT` somewhere new as well, or expect the first download against
+the new database to be the bulk run again.
 
 ### Where the downloaded data lives
 
@@ -823,10 +992,14 @@ which for CMIP7 comes out as:
 ```text
 MIP-DRS7/CMIP7/CMIP/UKNCSP/UKESM1-3-LL/historical/r2i1p1f2/glb/mon/tas/tavg-h2m-hxy-u/g110/v20261020/tas_...nc
 MIP-DRS7/CMIP7/CMIP/UKNCSP/UKESM1-3-LL/historical/r2i1p1f2/glb/mon/tos/tavg-u-hxy-sea/g126/v20261020/tos_...nc
+MIP-DRS7/CMIP7/CMIP/UKNCSP/UKESM1-3-LL/abrupt-4xCO2/r1i1p1f1/glb/mon/rlut/tavg-u-hxy-u/g110/v20260901/rlut_...nc
+MIP-DRS7/CMIP7/CMIP/UKNCSP/UKESM1-3-LL/piControl/r1i1p1f1/glb/mon/rlut/tavg-u-hxy-u/g110/v20261002/rlut_...nc
 ```
 
-The variable and its branding are both in the path, which is why both CMIP7
-questions can share one `DOWNLOAD_ROOT` with nothing done to keep them apart.
+The experiment, the variable and its branding are all in the path, which is why
+every CMIP7 question can share one `DOWNLOAD_ROOT` with nothing done to keep them
+apart — including the Gregory question's `abrupt-4xCO2` runs and the `piControl`
+runs it walks back to, which are the last two lines above.
 
 This is DRS-*shaped* — navigable by eye, sorts the way a climate scientist expects —
 but it is **esmporium's own layout and not any project's real DRS**, deliberately.
@@ -841,7 +1014,7 @@ Two consequences worth knowing:
   it already has. Moving a file means fetching it again.
 - `tests/unit/test_esmporium_contract.py` pins the layout as a *path*, not as a
   name, for the same reason: if esmporium ever changes it, we find out from a test
-  rather than from a ~41 GB re-download.
+  rather than from a ~98 GB re-download.
 
 ## Development
 
@@ -881,8 +1054,10 @@ src/local/endpoints.py            a tracked requirement, and asking one endpoint
 src/local/database.py             opening and migrating the database
 src/local/notifications.py        the mechanics of sending an email
 src/local/downloads.py            where downloads go, and what came of one
+src/local/parents.py              walking back to the control a run branched from
 src/local/summary_formatting.py   how the search report is laid out
 src/local/download_formatting.py  how a download run is laid out
+src/local/parent_formatting.py    how a parent walk is laid out
 src/local/node_health.py          how the data node report is laid out
 tests/conftest.py                 builders for summaries and download runs, so no
                                   test needs a database or a network

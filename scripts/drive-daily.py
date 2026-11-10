@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from esmporium.db import download_summary
 from esmporium.downloads import totals
 from esmporium.query import Query
+from esmporium.requirements import Ancestors
 from sqlmodel import Session
 
 from local.database import open_database
@@ -37,10 +38,13 @@ from local.endpoints import (
     Endpoint,
     EndpointResult,
     TrackedRequirement,
+    facade_selector,
     requirement_for,
     search_endpoint,
 )
 from local.notifications import EmailSettings, send_email
+from local.parent_formatting import format_parent_walks
+from local.parents import until_experiments, walk_parents
 from local.summary_formatting import (
     PATTERN_EFFECT_FACETS,
     ReportGroup,
@@ -54,6 +58,7 @@ if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
 
     from local.downloads import DownloadIntent
+    from local.parents import ParentWalk
 
 # ---------------------------------------------------------------------------------
 # Configuration. Everything you might want to change is in this block.
@@ -83,7 +88,28 @@ under `DOWNLOAD_ROOT` and the next download would fetch all of it again.
 DB_PATH = REPO_ROOT / "dbs" / f"{DB_VERSION_ID}_db.sqlite"
 """Database holding every result we have ever seen, and every run we have ever done"""
 
-TAS_STEM = "pattern-effect-tas-mon-historical"
+# --- a note on the `-g2` suffix on the two stems below ---------------------------
+#
+# Pointing at an esmporium which gave `Leaf` a `lineage` changed **every** stored
+# requirement's fingerprint, because `requirement_hash` covers the whole tree. A
+# search arriving under a name the database already holds against a different hash is
+# refused outright (`RequirementNameInUseError`), so every one of these questions had
+# to be renamed or the job would simply stop working.
+#
+# The generation suffix is the cheap lever and `DB_VERSION_ID` is the expensive one,
+# and it matters which you reach for. A new stem restarts *that question's search
+# history* and nothing else: the dataset, file and download rows are keyed by the
+# data, not by the question, so everything already on disk stays accounted for. A
+# bumped database restarts all of it -- including the `Download` rows that are the
+# only record of what we hold, because `plan_downloads` needs the row *and* the file
+# and treats a file with no row as one to fetch again. Bumping would have re-fetched
+# the entire archive on the server.
+#
+# So: stems move to `-g2`, `DB_VERSION_ID` stays at `002`. The cost is one email
+# reporting every dataset as new, once, which is the whole of what we were willing to
+# pay.
+
+TAS_STEM = "pattern-effect-tas-mon-historical-g2"
 """
 What the `tas` search is called in the database, before the project and endpoint
 
@@ -91,7 +117,7 @@ See [TrackedRequirement.stem][local.endpoints.TrackedRequirement.stem]: this is 
 key the whole history hangs off, so changing it starts again from scratch.
 """
 
-SST_STEM = "pattern-effect-sst-mon-historical"
+SST_STEM = "pattern-effect-sst-mon-historical-g2"
 """
 What the `tos` search is called in the database, before the project and endpoint
 
@@ -103,16 +129,79 @@ As load-bearing as [TAS_STEM][]: changing it starts this question's history agai
 from scratch.
 """
 
-SUBJECT_STEM = "pattern-effect"
+GREGORY_STEM = "gregory-toa-mon-abrupt4x"
+"""
+What the Gregory search is called in the database, before the project and endpoint
+
+A third question, and a different one: the pattern-effect searches ask what the
+*historical* record holds, this one asks for the step-forcing experiment and the
+control it branched from, which is what a Gregory regression is estimated from. Its
+own stem, therefore its own history.
+
+No `-g2`, because there is no `-g1`: this question is new, and a name nobody has
+stored yet cannot clash with anything.
+"""
+
+SUBJECT_STEM = "cmip-tracking"
 """
 What both emails call this job in their subject lines
 
-Deliberately *not* either stem above. A subject line names the job, and the job is
-now more than one question, so a subject built from one question's stem would read
-as a mail about `tas` on a morning when only `tos` moved.
+Deliberately *not* any of the stems above, and no longer a prefix of them either. A
+subject line names the job, and the job is now three questions in two different
+scientific registers, so a subject built from one of them -- or from the family one
+of them belongs to -- would read as a mail about the pattern effect on a morning when
+only the Gregory search moved.
 
-Report-only, and therefore free to change -- but it is what a mail filter matches
-on, so changing it is a thing to go and do something about in Gmail as well.
+Report-only, and therefore free to change. **But it is what a mail filter matches
+on**: it was `pattern-effect` until the Gregory question arrived, so the Gmail filter
+has to be pointed at this instead or the mail stops being filed.
+"""
+
+GREGORY_VARIABLES = ("tas", "rsdt", "rsut", "rlut")
+"""
+The four variables a Gregory regression is estimated from
+
+Surface air temperature against the net top-of-atmosphere imbalance, and the
+imbalance is three fluxes rather than one: incoming shortwave, reflected shortwave
+and outgoing longwave. All four or none -- a model missing one of them cannot be
+regressed, which is why they are one question rather than four.
+"""
+
+GREGORY_SUFFIXES = ("tavg-h2m-hxy-u", "tavg-u-hxy-u")
+"""
+The CMIP7 branded-variable suffixes those four are published under
+
+Two rather than one, because `tas` is measured at a height (`h2m`) and the fluxes are
+not (`u`). Naming both and letting the four variables cross with them is exact here:
+each variable exists under one of the two and neither of the combinations that do not
+exist returns anything. Measured against the live archive on 2026-11-10: 24 dataset
+versions for `abrupt-4xCO2` across 6 models, 4 each.
+
+**Not optional, and the reason is the same trap the `tos` question documents.**
+Monthly `tas` is also published as `tminavg-h2m-hxy-u` and `tmaxavg-h2m-hxy-u`, the
+monthly means of the daily minimum and maximum. Those are different quantities under
+the same variable name, and a query naming no suffix would fetch all three and report
+them as one requirement -- 10 dataset versions where we want 6.
+"""
+
+GREGORY_EXPERIMENT = "abrupt-4xCO2"
+"""The step-forcing experiment the regression is run on"""
+
+UNTIL_PICONTROL = Query(experiment=("piControl", "esm-piControl"))
+"""
+Where the Gregory question's lineage stops walking back
+
+The control, which is what "and the run it branched from" means for this question:
+the regression is of the *anomaly* against the control, so the control is not a nice
+extra, it is half the measurement.
+
+Both spellings, because an Earth-system model's control is `esm-piControl` and a
+physical-only one's is `piControl`; both are published in CMIP7, so naming both costs
+nothing and misses nothing. Deliberately **no `project`** -- a walk refuses to climb
+across projects anyway, so naming one would only be another facet that has to match.
+
+Measured on 2026-11-10: all six `abrupt-4xCO2` models declare `piControl` of the same
+model and the same variant, so every chain here is one hop.
 """
 
 REQUIREMENTS = (
@@ -199,6 +288,46 @@ REQUIREMENTS = (
         download=True,
         detailed=True,
     ),
+    TrackedRequirement(
+        label="CMIP7 gregory",
+        stem=GREGORY_STEM,
+        role_stem="gregory",
+        query=Query(
+            project=("CMIP7",),
+            variable=GREGORY_VARIABLES,
+            experiment=(GREGORY_EXPERIMENT,),
+            reporting_interval=("mon",),
+            processing_id=GREGORY_SUFFIXES,
+        ),
+        # "And the control it branched from". This is the whole reason this question
+        # is shaped differently from the three above: it is not satisfied by what its
+        # own query matches, and saying so is what makes a parent walk this question's
+        # business rather than a thing somebody remembers to run.
+        lineage=Ancestors(until=UNTIL_PICONTROL, role="control"),
+        # The query above asks about `abrupt-4xCO2`, and a download is planned from a
+        # query. So without this the controls the walk goes and finds would be
+        # searched for, linked, reported -- and never fetched. See
+        # `TrackedRequirement.download_query`, which refuses the combination that
+        # leaves this out.
+        download_query=Query(
+            project=("CMIP7",),
+            variable=GREGORY_VARIABLES,
+            experiment=(GREGORY_EXPERIMENT, "piControl"),
+            reporting_interval=("mon",),
+            processing_id=GREGORY_SUFFIXES,
+        ),
+        endpoints=(
+            Endpoint("CMIP7", "search.east.esgf.io", "east"),
+            Endpoint("CMIP7", "search.west.esgf.io", "west"),
+        ),
+        download=True,
+        detailed=True,
+        # Four variables across two experiments, so model and variant alone would
+        # describe eight of this question's rows identically. The three questions
+        # above each ask about one variable in one experiment and so need none of
+        # this.
+        report_facets=("model", "variant_label", "experiment", "variable"),
+    ),
 )
 """
 Every question we track, and what to do with its answers
@@ -219,7 +348,7 @@ history. It shares the `tas` question's download directory deliberately: one
 
 Note that the labels have to be distinct, and not only for readability: the download
 plan is matched back to its search results by label (see
-[with_download_blocks][]), so two requirements sharing one would quietly lose a
+[with_appendices][]), so two requirements sharing one would quietly lose a
 download block out of the morning email. `test_driver_config.py` has the tripwire.
 """
 
@@ -328,6 +457,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--skip-parents",
+        action="store_true",
+        help=(
+            "search and report without following any lineage's parent links. For "
+            "re-running a search without paying for the walk again; note that a "
+            "download planned afterwards will not know about ancestors nobody has "
+            "walked to yet."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -397,10 +536,99 @@ def search_everything(engine: Engine) -> tuple[ReportGroup, ...]:
                 label=tracked.label,
                 detailed=tracked.detailed,
                 results=tuple(results),
+                facets=tracked.facets,
             )
         )
 
     return tuple(groups)
+
+
+def with_ancestry() -> tuple[TrackedRequirement, ...]:
+    """
+    Get the requirements which ask about where their runs came from
+
+    Returns
+    -------
+    :
+        Those of [REQUIREMENTS][] with a `lineage`, in the same order
+    """
+    return tuple(each for each in REQUIREMENTS if each.lineage is not None)
+
+
+def walk_all_parents(
+    engine: Engine, groups: Sequence[ReportGroup]
+) -> tuple[ParentWalk, ...]:
+    """
+    Follow the parent links of every question which asks about its ancestry
+
+    Run between the search and the download, which is the only place it can go. The
+    controls a walk finds are datasets the search never saw, so the rows have to exist
+    before `plan_downloads` is asked what to fetch -- and the walk has to be *finished*
+    before the first email, or the email would promise a download that does not yet
+    know about half of itself.
+
+    Parameters
+    ----------
+    engine
+        The database to read the parent facts from and write the links into
+
+    groups
+        This morning's search results, which is where the dataset versions to walk
+        back from come from
+
+    Returns
+    -------
+    :
+        One walk per requirement with a lineage, in [REQUIREMENTS][] order
+    """
+    by_label = {group.label: group for group in groups}
+
+    walks = []
+    for tracked in with_ancestry():
+        group = by_label.get(tracked.label)
+        # Every endpoint's answer, as one set. The endpoints are asked separately so
+        # that each has its own history, but a dataset version is a row in this
+        # database rather than a thing belonging to the host which mentioned it, so
+        # east and west naming the same version is one version to walk back from.
+        starting_from = (
+            {
+                version.dataset_version_id
+                for result in group.results
+                if result.summary is not None
+                for version in result.summary.current
+            }
+            if group is not None
+            else set()
+        )
+
+        logger.info(
+            "Walking the ancestry of %s, from %s dataset version(s)",
+            tracked.label,
+            len(starting_from),
+        )
+        walk = walk_parents(
+            engine,
+            tracked.label,
+            # Explicitly, always. esmporium reads an omitted collection as "every
+            # unresolved assertion in the database", and since this esmporium every
+            # CMIP7 search records parent facts on ingest -- so leaving it out would
+            # quietly start climbing the pattern-effect questions' ancestry too, and
+            # searching for controls nobody asked about.
+            sorted(starting_from),
+            until_experiment=until_experiments(
+                requirement_for(tracked, tracked.endpoints[0])
+            ),
+            selector=facade_selector(tracked.endpoints),
+        )
+
+        if walk.failure is not None:
+            logger.warning("%s ancestry failed: %s", tracked.label, walk.failure)
+        else:
+            logger.info("%s: %s parent link(s) written", tracked.label, walk.n_linked)
+
+        walks.append(walk)
+
+    return tuple(walks)
 
 
 def plan_everything(engine: Engine, root: Path) -> tuple[DownloadIntent, ...]:
@@ -429,26 +657,38 @@ def plan_everything(engine: Engine, root: Path) -> tuple[DownloadIntent, ...]:
         # `already_here` set on each, so this yields both "what is outstanding" and
         # "how much exists at all" -- and the second is what lets an empty plan say
         # whether we have everything or have simply never searched.
-        everything = plan_only(engine, tracked.query, root, skip_done=False)
+        everything = plan_only(engine, tracked.download_target, root, skip_done=False)
         outstanding = [item for item in everything if not item.already_here]
         intents.append(
-            describe_plan(engine, tracked.label, outstanding, n_known=len(everything))
+            describe_plan(
+                engine,
+                tracked.label,
+                outstanding,
+                n_known=len(everything),
+                facets=tracked.facets,
+            )
         )
 
     return tuple(intents)
 
 
-def with_download_blocks(
+def with_appendices(
     groups: Sequence[ReportGroup],
     intents: Sequence[DownloadIntent],
+    walks: Sequence[ParentWalk],
     *,
     root: Path | None,
 ) -> tuple[ReportGroup, ...]:
     """
-    Put each requirement's download plan inside its own section of the report
+    Put each requirement's ancestry and download plan inside its own section
 
-    Matched by label, so a group with nothing to download is returned untouched and
-    a question which is only ever watched never grows a heading about downloading.
+    Everything here is matched by label, so a group with nothing to say grows nothing:
+    a question which is only ever watched never carries a heading about downloading,
+    and one which stands alone never carries a heading about ancestry.
+
+    The ancestry goes above the download plan, because it is what the plan is partly a
+    consequence of -- "we walked back to six controls" and then "and here is the 40 GB
+    that costs".
 
     Parameters
     ----------
@@ -458,34 +698,49 @@ def with_download_blocks(
     intents
         What each downloading requirement is about to fetch
 
+    walks
+        What came of following each lineage. See [walk_all_parents][(m).].
+
     root
         Where the files would go. `None` when nothing downloads, in which case the
-        groups come back as they went in.
+        groups keep their ancestry blocks and gain no download ones.
 
     Returns
     -------
     :
-        The groups, with an appendix on the ones that have a plan
+        The groups, with an appendix on the ones that have anything to append
     """
-    if root is None or not intents:
-        return tuple(groups)
+    plans = {intent.label: intent for intent in intents}
+    ancestry = {walk.label: walk for walk in walks}
 
-    by_label = {intent.label: intent for intent in intents}
+    appended = []
+    for group in groups:
+        blocks = []
 
-    return tuple(
-        replace(
-            group,
-            appendix=format_download_intent(
-                [by_label[group.label]],
-                root=root,
-                facets=IDENTITY_FACETS,
-                max_rows=MAX_ROWS,
-            ),
+        walk = ancestry.get(group.label)
+        if walk is not None:
+            blocks.append(format_parent_walks([walk], max_rows=MAX_ROWS))
+
+        intent = plans.get(group.label)
+        if intent is not None and root is not None:
+            blocks.append(
+                format_download_intent(
+                    [intent],
+                    root=root,
+                    facets=IDENTITY_FACETS,
+                    max_rows=MAX_ROWS,
+                )
+            )
+
+        # `''` renders nothing rather than a blank section, which is why the filter
+        # is on the rendered text and not on whether we had something to render:
+        # `format_parent_walks` is entitled to come back empty.
+        written = [block.strip("\n") for block in blocks if block.strip()]
+        appended.append(
+            replace(group, appendix="\n\n".join(written)) if written else group
         )
-        if group.label in by_label
-        else group
-        for group in groups
-    )
+
+    return tuple(appended)
 
 
 def download_everything(engine: Engine, root: Path) -> tuple[DownloadGroup, ...]:
@@ -515,7 +770,9 @@ def download_everything(engine: Engine, root: Path) -> tuple[DownloadGroup, ...]
         )
         results = run_downloads(
             engine,
-            tracked.query,
+            # The download's query, not the search's: for a question with a lineage
+            # they are different, and this is the one which names the ancestors.
+            tracked.download_target,
             root,
             max_workers=DOWNLOAD_WORKERS,
             per_data_node=PER_DATA_NODE,
@@ -529,6 +786,7 @@ def download_everything(engine: Engine, root: Path) -> tuple[DownloadGroup, ...]
                 label=f"{tracked.stem} \u00b7 {tracked.label}",
                 records=describe_results(engine, results),
                 totals=totals(results),
+                facets=tracked.facets,
             )
         )
 
@@ -596,12 +854,17 @@ def report_failure(what: str) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     """
-    Search, report, download, report
+    Search, walk the ancestry, report, download, report
 
     In that order, and in one process, so that "the download sees what this morning's
     search found" is a fact about the code rather than a convention in the crontab.
     The search report is emailed *before* the download starts, so a long download
     cannot make the morning mail late.
+
+    The walk sits where it does because it is the only place it fits: it writes rows
+    for datasets the search never saw, and the plan and the email both have to be
+    able to see them. It costs a handful of searches, not a download, so it does not
+    make the morning mail late either.
 
     Parameters
     ----------
@@ -667,9 +930,14 @@ def main(argv: list[str] | None = None) -> None:
 
             raise
 
+        # Before the plan, and before the mail. The controls a walk finds are rows
+        # the search never wrote, so they have to be in the database before anything
+        # asks what there is to download.
+        walks = () if args.skip_parents else walk_all_parents(engine, groups)
+
         intents = plan_everything(engine, root) if root is not None else ()
         rendered = format_report(
-            with_download_blocks(groups, intents, root=root),
+            with_appendices(groups, intents, walks, root=root),
             max_rows=MAX_ROWS,
             facets=PATTERN_EFFECT_FACETS,
         )
@@ -685,7 +953,7 @@ def main(argv: list[str] | None = None) -> None:
                 or not result.summary.run.complete
                 for group in groups
                 for result in group.results
-            )
+            ) or any(walk.failure is not None for walk in walks)
             if anything_to_say or EMAIL_WHEN_NOTHING_CHANGED:
                 try_to_notify(report_subject(groups, stem=SUBJECT_STEM), rendered)
             else:
