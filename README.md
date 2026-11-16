@@ -171,7 +171,7 @@ extra — it is half the measurement. A `TrackedRequirement` says so by carrying
 `lineage`:
 
 ```python
-lineage=Ancestors(until=UNTIL_PICONTROL, role="control"),
+lineage = (Ancestors(until=UNTIL_PICONTROL, role="control"),)
 ```
 
 and that is the whole declaration. Where it stops is read back off the requirement
@@ -229,8 +229,8 @@ morning email — and never fetched, with nothing raised and nothing logged. Hen
 `download_query`:
 
 ```python
-query=Query(..., experiment=("abrupt-4xCO2",)),
-download_query=Query(..., experiment=("abrupt-4xCO2", "piControl")),
+query = (Query(..., experiment=("abrupt-4xCO2",)),)
+download_query = (Query(..., experiment=("abrupt-4xCO2", "piControl")),)
 ```
 
 `TrackedRequirement.__post_init__` refuses a question which has a lineage and
@@ -798,7 +798,7 @@ quietly fills a disk; the dry run is how you see the second one coming.
 Adding a facet value is the easy case — each facet is a tuple:
 
 ```python
-variable=("tas", "pr"),
+variable = (("tas", "pr"),)
 ```
 
 This still changes the requirement's meaning, so it still needs a new name.
